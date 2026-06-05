@@ -1,0 +1,14 @@
+services:
+  kitchen-app:
+    image: ghcr.io/OWNER/kitchen-app:latest   # <-- замени OWNER на свой GitHub-логин/организацию
+    container_name: kitchen-app
+    restart: always
+    env_file: .env
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - edge
+
+networks:
+  edge:
+    external: true
