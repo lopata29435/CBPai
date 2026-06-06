@@ -74,7 +74,7 @@ export function App() {
       <main>
         {tab === 'week' && <Week />}
         {tab === 'shopping' && <Shopping />}
-        {tab === 'inventory' && <Inventory />}
+        {tab === 'inventory' && <Inventory categories={cats} />}
         {tab === 'scan' && <Scan state={scan} setState={setScan} categories={cats} />}
         {tab === 'stats' && <Stats />}
         {tab === 'prices' && <Prices />}
@@ -292,8 +292,12 @@ function Shopping() {
   );
 }
 
-function Inventory() {
+function Inventory({ categories }: { categories: string[] }) {
   const [items, setItems] = useState<any[]>([]);
+  const [name, setName] = useState('');
+  const [qty, setQty] = useState('');
+  const [unit, setUnit] = useState('g');
+  const [cat, setCat] = useState('Прочее');
   async function load() {
     const d = await getJSON('/api/inventory');
     if (d.ok) setItems(d.items || []);
@@ -303,9 +307,30 @@ function Inventory() {
     await postJSON('/api/inventory/adjust', { ingredient_id, qty });
     setItems((xs) => xs.map((x) => (x.ingredient_id === ingredient_id ? { ...x, qty } : x)));
   }
-  if (!items.length) return <p className="muted">Холодильник пуст. Он наполняется автоматически при сканировании чеков, либо правь количества здесь вручную.</p>;
+  async function add() {
+    if (!name.trim() || !qty) return;
+    const d = await postJSON('/api/inventory/add', { name: name.trim(), qty: parseFloat(qty), unit, category: cat });
+    if (!d.ok) { alert('Ошибка: ' + (d.error || '')); return; }
+    setName(''); setQty('');
+    load();
+  }
+  const catList = categories.length ? categories : CATS;
   return (
     <div>
+      <section className="day">
+        <h2>Добавить продукт</h2>
+        <div className="addrow">
+          <input placeholder="название" value={name} onChange={(e) => setName(e.target.value)} />
+          <input type="number" placeholder="кол-во" value={qty} onChange={(e) => setQty(e.target.value)} style={{ width: 80 }} />
+          <select value={unit} onChange={(e) => setUnit(e.target.value)}>{UNITS.map((u) => <option key={u}>{u}</option>)}</select>
+        </div>
+        <div className="addrow" style={{ marginTop: 6 }}>
+          <select value={cat} onChange={(e) => setCat(e.target.value)} style={{ flex: 1 }}>{catList.map((c) => <option key={c}>{c}</option>)}</select>
+          <button onClick={add} style={{ width: 'auto', padding: '8px 14px' }}>Добавить</button>
+        </div>
+      </section>
+
+      {!items.length && <p className="muted">Холодильник пуст. Добавь продукт выше или отсканируй чек.</p>}
       {items.map((it) => (
         <div key={it.ingredient_id} className="inv">
           <span className="nm">{it.name}</span>
@@ -361,11 +386,9 @@ function Stats() {
   );
 }
 
-function priceFmt(kop: number | null, bu: string) {
+function priceLine(kop: number | null, label: string) {
   if (kop == null) return '—';
-  if (bu === 'g') return Math.round(kop * 10) + ' ₽/кг';
-  if (bu === 'ml') return Math.round(kop * 10) + ' ₽/л';
-  return Math.round(kop / 100) + ' ₽/шт';
+  return (kop / 100).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ' + label;
 }
 
 function Prices() {
@@ -393,12 +416,12 @@ function Prices() {
           <div key={it.ingredient_id}>
             <div className="inv" onClick={() => toggle(it.ingredient_id)} style={{ cursor: 'pointer' }}>
               <span className="nm">{it.name}</span>
-              <span>{priceFmt(it.latest_kop, it.base_unit)}</span>
+              <span>{priceLine(it.latest_kop, it.unit_label)}</span>
               <span style={{ width: 56, textAlign: 'right', fontSize: 12, color: change == null ? 'var(--muted)' : change > 0 ? '#e74c3c' : '#2ecc71' }}>
                 {change == null ? '' : (change > 0 ? '▲' : '▼') + Math.abs(change).toFixed(0) + '%'}
               </span>
             </div>
-            {open === it.ingredient_id && <Spark series={series} base_unit={it.base_unit} />}
+            {open === it.ingredient_id && <Spark series={series} label={it.unit_label} />}
           </div>
         );
       })}
@@ -406,7 +429,7 @@ function Prices() {
   );
 }
 
-function Spark({ series, base_unit }: { series: any; base_unit: string }) {
+function Spark({ series, label }: { series: any; label: string }) {
   if (!series) return <p className="muted" style={{ padding: '4px 0' }}>загрузка графика…</p>;
   const pts: number[] = (series.series || []).map((p: any) => p.price_kop);
   if (pts.length < 2) return <p className="muted" style={{ padding: '4px 0' }}>мало точек для графика (нужно ≥2 покупки)</p>;
@@ -426,7 +449,7 @@ function Spark({ series, base_unit }: { series: any; base_unit: string }) {
         <path d={path} fill="none" stroke="#3a7afe" strokeWidth="2" />
       </svg>
       <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-        мин {priceFmt(min, base_unit)} · макс {priceFmt(max, base_unit)} · точек: {pts.length}
+        мин {priceLine(min, label)} · макс {priceLine(max, label)} · точек: {pts.length}
       </div>
     </div>
   );

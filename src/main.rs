@@ -89,6 +89,7 @@ async fn main() {
         .route("/api/shopping/dismiss", post(shopping_dismiss))
         .route("/api/inventory", get(inventory))
         .route("/api/inventory/adjust", post(inventory_adjust))
+        .route("/api/inventory/add", post(inventory_add))
         .route("/api/categories", get(categories))
         .route("/api/stats", get(stats))
         .route("/api/prices", get(prices))
@@ -351,10 +352,10 @@ async fn shopping(State(st): State<AppState>) -> ApiResult {
     let mut price_per_base: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
     if !ids.is_empty() {
         let prows = sqlx::query(
-            "SELECT DISTINCT ON (ingredient_id) ingredient_id, price_kop, \
-             parsed_amount::float8 AS amt, parsed_unit \
+            "SELECT DISTINCT ON (ingredient_id) ingredient_id, sum_kop, \
+             parsed_amount::float8 AS amt, parsed_unit, quantity::float8 AS q \
              FROM receipt_items \
-             WHERE ingredient_id = ANY($1) AND price_kop IS NOT NULL AND parsed_amount > 0 \
+             WHERE ingredient_id = ANY($1) AND sum_kop IS NOT NULL AND parsed_amount > 0 \
              ORDER BY ingredient_id, id DESC",
         )
         .bind(&ids)
@@ -363,15 +364,20 @@ async fn shopping(State(st): State<AppState>) -> ApiResult {
         .map_err(err)?;
         for r in &prows {
             let id: i64 = r.get("ingredient_id");
-            let pk: Option<i64> = r.get("price_kop");
+            let sum: Option<i64> = r.get("sum_kop");
             let amt: f64 = r.get("amt");
             let unit: Option<String> = r.get("parsed_unit");
             let unit = unit.unwrap_or_else(|| "pcs".to_string());
-            if let Some(pk) = pk {
-                let (base_amt, _) = to_base(amt, &unit);
-                if base_amt > 0.0 {
-                    price_per_base.insert(id, pk as f64 / base_amt);
-                }
+            let q: Option<f64> = r.get("q");
+            // упаковок: для целого количества умножаем размер упаковки, для весового (дробное) — 1
+            let mult = match q {
+                Some(qq) if qq >= 1.0 && qq.fract().abs() < 0.001 => qq,
+                _ => 1.0,
+            };
+            let (base_amt, _) = to_base(amt, &unit);
+            let total = base_amt * mult;
+            if let (Some(sum), true) = (sum, total > 0.0) {
+                price_per_base.insert(id, sum as f64 / total); // коп за базовую единицу
             }
         }
     }
@@ -512,44 +518,59 @@ async fn shopping_toggle(State(st): State<AppState>, Json(b): Json<ToggleBody>) 
     Ok(Json(json!({"ok": true})))
 }
 
+// Подпись единицы цены: весовой товар (дробное кол-во) -> ₽/кг или ₽/л, иначе ₽/шт
+fn price_label(last_q: Option<f64>, last_unit: Option<&str>) -> &'static str {
+    let weighed = last_q.map(|q| (q - q.round()).abs() > 0.001).unwrap_or(false);
+    if weighed {
+        match last_unit {
+            Some("l") | Some("ml") => "₽/л",
+            _ => "₽/кг",
+        }
+    } else {
+        "₽/шт"
+    }
+}
+
 async fn prices(State(st): State<AppState>) -> ApiResult {
-    // цена за БАЗОВУЮ единицу по каждому ингредиенту: последняя, предыдущая, мин, макс, кол-во точек
+    // цена ИЗ ЧЕКА (за единицу продажи): последняя, предыдущая, мин, макс, кол-во точек
     let rows = sqlx::query(
-        "WITH series AS ( \
-           SELECT ri.ingredient_id AS id, r.created_at AS ts, \
-                  ri.price_kop::float8 / (CASE ri.parsed_unit WHEN 'kg' THEN ri.parsed_amount*1000 WHEN 'l' THEN ri.parsed_amount*1000 ELSE ri.parsed_amount END) AS up \
+        "WITH s AS ( \
+           SELECT ri.ingredient_id AS id, r.created_at AS ts, ri.price_kop::float8 AS pk, \
+                  ri.quantity::float8 AS q, ri.parsed_unit AS u \
            FROM receipt_items ri JOIN receipts r ON r.id = ri.receipt_id \
-           WHERE ri.ingredient_id IS NOT NULL AND ri.price_kop IS NOT NULL AND ri.parsed_amount > 0 ) \
-         SELECT id, (array_agg(up ORDER BY ts DESC))[1] AS latest, (array_agg(up ORDER BY ts DESC))[2] AS prev, \
-                min(up) AS minp, max(up) AS maxp, count(*)::int AS n \
-         FROM series GROUP BY id",
+           WHERE ri.ingredient_id IS NOT NULL AND ri.price_kop IS NOT NULL ) \
+         SELECT id, (array_agg(pk ORDER BY ts DESC))[1] AS latest, (array_agg(pk ORDER BY ts DESC))[2] AS prev, \
+                min(pk) AS minp, max(pk) AS maxp, count(*)::int AS n, \
+                (array_agg(q ORDER BY ts DESC))[1] AS last_q, \
+                (array_agg(u ORDER BY ts DESC))[1] AS last_unit \
+         FROM s GROUP BY id",
     )
     .fetch_all(&st.purchases)
     .await
     .map_err(err)?;
 
     let ids: Vec<i64> = rows.iter().map(|r| r.get::<i64, _>("id")).collect();
-    let mut names: std::collections::HashMap<i64, (String, String)> = std::collections::HashMap::new();
+    let mut names: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
     if !ids.is_empty() {
-        let nrows = sqlx::query("SELECT id, name, base_unit FROM ingredients WHERE id = ANY($1)")
+        let nrows = sqlx::query("SELECT id, name FROM ingredients WHERE id = ANY($1)")
             .bind(&ids)
             .fetch_all(&st.kitchen)
             .await
             .map_err(err)?;
         for r in &nrows {
-            names.insert(
-                r.get::<i64, _>("id"),
-                (r.get::<String, _>("name"), r.get::<String, _>("base_unit")),
-            );
+            names.insert(r.get::<i64, _>("id"), r.get::<String, _>("name"));
         }
     }
     let mut items: Vec<Value> = rows
         .iter()
         .filter_map(|r| {
             let id: i64 = r.get("id");
-            let (name, base_unit) = names.get(&id)?.clone();
+            let name = names.get(&id)?.clone();
+            let last_q: Option<f64> = r.get("last_q");
+            let last_unit: Option<String> = r.get("last_unit");
             Some(json!({
-                "ingredient_id": id, "name": name, "base_unit": base_unit,
+                "ingredient_id": id, "name": name,
+                "unit_label": price_label(last_q, last_unit.as_deref()),
                 "latest_kop": r.get::<Option<f64>,_>("latest"),
                 "prev_kop": r.get::<Option<f64>,_>("prev"),
                 "min_kop": r.get::<Option<f64>,_>("minp"),
@@ -564,10 +585,10 @@ async fn prices(State(st): State<AppState>) -> ApiResult {
 
 async fn price_series(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResult {
     let rows = sqlx::query(
-        "SELECT r.created_at::date::text AS d, \
-                (ri.price_kop::float8 / (CASE ri.parsed_unit WHEN 'kg' THEN ri.parsed_amount*1000 WHEN 'l' THEN ri.parsed_amount*1000 ELSE ri.parsed_amount END)) AS up \
+        "SELECT r.created_at::date::text AS d, ri.price_kop::float8 AS pk, \
+                ri.quantity::float8 AS q, ri.parsed_unit AS u \
          FROM receipt_items ri JOIN receipts r ON r.id = ri.receipt_id \
-         WHERE ri.ingredient_id = $1 AND ri.price_kop IS NOT NULL AND ri.parsed_amount > 0 \
+         WHERE ri.ingredient_id = $1 AND ri.price_kop IS NOT NULL \
          ORDER BY r.created_at",
     )
     .bind(id)
@@ -576,17 +597,21 @@ async fn price_series(State(st): State<AppState>, Path(id): Path<i64>) -> ApiRes
     .map_err(err)?;
     let series: Vec<Value> = rows
         .iter()
-        .map(|r| json!({"date": r.get::<String,_>("d"), "price_kop": r.get::<f64,_>("up")}))
+        .map(|r| json!({"date": r.get::<String,_>("d"), "price_kop": r.get::<f64,_>("pk")}))
         .collect();
-    let nm = sqlx::query("SELECT name, base_unit FROM ingredients WHERE id = $1")
+    let last_q: Option<f64> = rows.last().and_then(|r| r.get("q"));
+    let last_unit: Option<String> = rows.last().and_then(|r| r.get("u"));
+    let nm = sqlx::query("SELECT name FROM ingredients WHERE id = $1")
         .bind(id)
         .fetch_optional(&st.kitchen)
         .await
         .map_err(err)?;
-    let (name, base_unit) = nm
-        .map(|r| (r.get::<String, _>("name"), r.get::<String, _>("base_unit")))
-        .unwrap_or_default();
-    Ok(Json(json!({"ok": true, "ingredient_id": id, "name": name, "base_unit": base_unit, "series": series})))
+    let name = nm.map(|r| r.get::<String, _>("name")).unwrap_or_default();
+    Ok(Json(json!({
+        "ok": true, "ingredient_id": id, "name": name,
+        "unit_label": price_label(last_q, last_unit.as_deref()),
+        "series": series
+    })))
 }
 
 async fn stats(State(st): State<AppState>) -> ApiResult {
@@ -712,6 +737,50 @@ async fn inventory_adjust(State(st): State<AppState>, Json(b): Json<AdjustBody>)
          ON CONFLICT (ingredient_id) DO UPDATE SET qty = EXCLUDED.qty, updated_at = now()",
     )
     .bind(b.ingredient_id).bind(b.qty).execute(&st.kitchen).await.map_err(err)?;
+    Ok(Json(json!({"ok": true})))
+}
+
+#[derive(Deserialize)]
+struct InvAddBody {
+    name: String,
+    qty: f64,
+    unit: String,
+    category: Option<String>,
+}
+
+async fn inventory_add(State(st): State<AppState>, Json(b): Json<InvAddBody>) -> ApiResult {
+    let name = b.name.trim().to_lowercase();
+    if name.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "пустое название".into()));
+    }
+    let category = b.category.unwrap_or_else(|| "Прочее".to_string());
+    // найти или создать ингредиент
+    let found = sqlx::query("SELECT id FROM ingredients WHERE name = $1")
+        .bind(&name)
+        .fetch_optional(&st.kitchen)
+        .await
+        .map_err(err)?;
+    let id: i64 = match found {
+        Some(r) => r.get("id"),
+        None => sqlx::query("INSERT INTO ingredients (name, category, base_unit) VALUES ($1,$2,$3) RETURNING id")
+            .bind(&name)
+            .bind(&category)
+            .bind(base_unit_of(&b.unit))
+            .fetch_one(&st.kitchen)
+            .await
+            .map_err(err)?
+            .get("id"),
+    };
+    let (base_amt, _) = to_base(b.qty, &b.unit);
+    sqlx::query(
+        "INSERT INTO inventory (ingredient_id, qty, updated_at) VALUES ($1,$2,now()) \
+         ON CONFLICT (ingredient_id) DO UPDATE SET qty = inventory.qty + EXCLUDED.qty, updated_at = now()",
+    )
+    .bind(id)
+    .bind(base_amt)
+    .execute(&st.kitchen)
+    .await
+    .map_err(err)?;
     Ok(Json(json!({"ok": true})))
 }
 
