@@ -53,7 +53,7 @@ type ScanState = {
 const initScan: ScanState = { mode: 'idle', err: '', manual: '', receipt: null, items: [] };
 
 export function App() {
-  const [tab, setTab] = useState<'week' | 'shopping' | 'inventory' | 'scan'>('week');
+  const [tab, setTab] = useState<'week' | 'shopping' | 'inventory' | 'scan' | 'stats' | 'prices'>('week');
   // состояние сканера живёт здесь -> не теряется при переключении вкладок
   const [scan, setScan] = useState<ScanState>(initScan);
   const [cats, setCats] = useState<string[]>(CATS);
@@ -68,12 +68,16 @@ export function App() {
         <button className={tab === 'shopping' ? 'on' : ''} onClick={() => setTab('shopping')}>Покупки</button>
         <button className={tab === 'inventory' ? 'on' : ''} onClick={() => setTab('inventory')}>Холодильник</button>
         <button className={tab === 'scan' ? 'on' : ''} onClick={() => setTab('scan')}>Чек</button>
+        <button className={tab === 'stats' ? 'on' : ''} onClick={() => setTab('stats')}>Статистика</button>
+        <button className={tab === 'prices' ? 'on' : ''} onClick={() => setTab('prices')}>Цены</button>
       </nav>
       <main>
         {tab === 'week' && <Week />}
         {tab === 'shopping' && <Shopping />}
         {tab === 'inventory' && <Inventory />}
         {tab === 'scan' && <Scan state={scan} setState={setScan} categories={cats} />}
+        {tab === 'stats' && <Stats />}
+        {tab === 'prices' && <Prices />}
       </main>
       {(scan.mode === 'loading' || scan.mode === 'applying') && (
         <div className="overlay">
@@ -202,6 +206,7 @@ function RecipeModal({ id, servings, onClose }: { id: number; servings: number; 
 function Shopping() {
   const [groups, setGroups] = useState<any[]>([]);
   const [manual, setManual] = useState<any[]>([]);
+  const [est, setEst] = useState<any>(null);
   const [name, setName] = useState('');
   const [qty, setQty] = useState('');
   const [unit, setUnit] = useState('pcs');
@@ -211,6 +216,7 @@ function Shopping() {
     if (!d.ok) return;
     setGroups(d.groups || []);
     setManual(d.manual || []);
+    setEst(d.estimate || null);
   }
   useEffect(() => { load(); }, []);
 
@@ -239,13 +245,23 @@ function Shopping() {
 
   return (
     <div>
+      {est && (est.total_kop > 0 || est.unknown_count > 0) && (
+        <div className="estbar">
+          <b>≈ {rub(est.total_kop)}</b>
+          {est.unknown_count > 0 && (
+            <div className="warn">⚠️ примерно: для {est.unknown_count} позиц. цена неизвестна — итог может отличаться</div>
+          )}
+        </div>
+      )}
       {groups.map((g) => (
         <section key={g.category} className="day">
           <h2>{g.category}</h2>
           {g.items.map((it: any) => (
             <div key={it.ingredient_id} className="buy">
               <input type="checkbox" checked={it.bought} onChange={(e) => toggle(it.ingredient_id, e.target.checked)} />
-              <span style={{ flex: 1, textDecoration: it.bought ? 'line-through' : 'none', opacity: it.bought ? 0.5 : 1 }}>{it.name} — {it.qty} {it.unit}</span>
+              <span style={{ flex: 1, textDecoration: it.bought ? 'line-through' : 'none', opacity: it.bought ? 0.5 : 1 }}>
+                {it.name} — {it.qty} {it.unit}{it.est_kop ? ' · ≈' + rub(it.est_kop) : ''}
+              </span>
               <button className="del" onClick={() => dismiss(it.ingredient_id)}>✕</button>
             </div>
           ))}
@@ -298,6 +314,120 @@ function Inventory() {
           <span className="cat">{it.category}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+function rub(kop: number) {
+  return ((kop || 0) / 100).toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽';
+}
+
+function Stats() {
+  const [d, setD] = useState<any>(null);
+  useEffect(() => { getJSON('/api/stats').then(setD); }, []);
+  if (!d) return <p className="muted">Загрузка…</p>;
+  if (!d.ok) return <p style={{ color: '#e74c3c' }}>Ошибка: {d.error}</p>;
+  const sp = d.spending || {};
+  return (
+    <div>
+      <div className="cards">
+        <div className="statcard"><div className="v">{rub(sp.total_kop)}</div><div className="k">всего потрачено</div></div>
+        <div className="statcard"><div className="v">{rub(sp.last30_kop)}</div><div className="k">за 30 дней</div></div>
+        <div className="statcard"><div className="v">{sp.receipts || 0}</div><div className="k">чеков</div></div>
+        <div className="statcard"><div className="v">{rub(sp.avg_basket_kop)}</div><div className="k">средний чек</div></div>
+      </div>
+
+      <section className="day">
+        <h2>Расходы по категориям</h2>
+        {(sp.by_category || []).length ? (sp.by_category).map((c: any) => (
+          <div key={c.category} className="inv"><span className="nm">{c.category}</span><span>{rub(c.sum_kop)}</span></div>
+        )) : <p className="muted">Нет данных (отсканируй чеки).</p>}
+      </section>
+
+      <section className="day">
+        <h2>Топ продуктов по тратам</h2>
+        {(sp.top_products || []).length ? (sp.top_products).map((p: any, i: number) => (
+          <div key={i} className="inv"><span className="nm">{p.name}</span><span>{rub(p.sum_kop)}</span></div>
+        )) : <p className="muted">Нет данных.</p>}
+      </section>
+
+      <section className="day">
+        <h2>Любимые блюда</h2>
+        {(d.dishes || []).length ? (d.dishes).map((x: any, i: number) => (
+          <div key={i} className="inv"><span className="nm">{x.name}</span><span>{x.count}×</span></div>
+        )) : <p className="muted">Пока нет выборов в меню.</p>}
+      </section>
+    </div>
+  );
+}
+
+function priceFmt(kop: number | null, bu: string) {
+  if (kop == null) return '—';
+  if (bu === 'g') return Math.round(kop * 10) + ' ₽/кг';
+  if (bu === 'ml') return Math.round(kop * 10) + ' ₽/л';
+  return Math.round(kop / 100) + ' ₽/шт';
+}
+
+function Prices() {
+  const [items, setItems] = useState<any[]>([]);
+  const [open, setOpen] = useState<number | null>(null);
+  const [series, setSeries] = useState<any>(null);
+  useEffect(() => { getJSON('/api/prices').then((d) => { if (d.ok) setItems(d.items || []); }); }, []);
+  async function toggle(id: number) {
+    if (open === id) { setOpen(null); setSeries(null); return; }
+    setOpen(id);
+    setSeries(null);
+    const d = await getJSON('/api/prices/' + id);
+    if (d.ok) setSeries(d);
+  }
+  if (!items.length) return <p className="muted">Нет данных о ценах. Отсканируй чеки — история цен начнёт копиться.</p>;
+  return (
+    <div>
+      <p className="muted">Цена за единицу по последней покупке. Нажми на продукт — график изменения цены.</p>
+      {items.map((it) => {
+        const change =
+          it.latest_kop != null && it.prev_kop != null && it.prev_kop > 0
+            ? ((it.latest_kop - it.prev_kop) / it.prev_kop) * 100
+            : null;
+        return (
+          <div key={it.ingredient_id}>
+            <div className="inv" onClick={() => toggle(it.ingredient_id)} style={{ cursor: 'pointer' }}>
+              <span className="nm">{it.name}</span>
+              <span>{priceFmt(it.latest_kop, it.base_unit)}</span>
+              <span style={{ width: 56, textAlign: 'right', fontSize: 12, color: change == null ? 'var(--muted)' : change > 0 ? '#e74c3c' : '#2ecc71' }}>
+                {change == null ? '' : (change > 0 ? '▲' : '▼') + Math.abs(change).toFixed(0) + '%'}
+              </span>
+            </div>
+            {open === it.ingredient_id && <Spark series={series} base_unit={it.base_unit} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function Spark({ series, base_unit }: { series: any; base_unit: string }) {
+  if (!series) return <p className="muted" style={{ padding: '4px 0' }}>загрузка графика…</p>;
+  const pts: number[] = (series.series || []).map((p: any) => p.price_kop);
+  if (pts.length < 2) return <p className="muted" style={{ padding: '4px 0' }}>мало точек для графика (нужно ≥2 покупки)</p>;
+  const w = 300, h = 70, pad = 6;
+  const min = Math.min(...pts), max = Math.max(...pts), range = max - min || 1;
+  const step = (w - 2 * pad) / (pts.length - 1);
+  const path = pts
+    .map((v, i) => {
+      const x = pad + i * step;
+      const y = h - pad - ((v - min) / range) * (h - 2 * pad);
+      return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+    })
+    .join(' ');
+  return (
+    <div style={{ padding: '6px 0 14px' }}>
+      <svg width="100%" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ background: '#1c1c1e', borderRadius: 8 }}>
+        <path d={path} fill="none" stroke="#3a7afe" strokeWidth="2" />
+      </svg>
+      <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+        мин {priceFmt(min, base_unit)} · макс {priceFmt(max, base_unit)} · точек: {pts.length}
+      </div>
     </div>
   );
 }

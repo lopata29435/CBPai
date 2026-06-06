@@ -90,6 +90,9 @@ async fn main() {
         .route("/api/inventory", get(inventory))
         .route("/api/inventory/adjust", post(inventory_adjust))
         .route("/api/categories", get(categories))
+        .route("/api/stats", get(stats))
+        .route("/api/prices", get(prices))
+        .route("/api/prices/:id", get(price_series))
         .route("/api/receipt/scan", post(receipt_scan))
         .route("/api/receipt/apply", post(receipt_apply))
         .layer(TraceLayer::new_for_http())
@@ -332,17 +335,57 @@ async fn shopping(State(st): State<AppState>) -> ApiResult {
     )
     .fetch_all(&st.kitchen).await.map_err(err)?;
 
+    // карта цен: последняя цена за БАЗОВУЮ единицу по каждому ингредиенту (из чеков)
+    let ids: Vec<i64> = rows.iter().map(|r| r.get::<i64, _>("id")).collect();
+    let mut price_per_base: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+    if !ids.is_empty() {
+        let prows = sqlx::query(
+            "SELECT DISTINCT ON (ingredient_id) ingredient_id, price_kop, \
+             parsed_amount::float8 AS amt, parsed_unit \
+             FROM receipt_items \
+             WHERE ingredient_id = ANY($1) AND price_kop IS NOT NULL AND parsed_amount > 0 \
+             ORDER BY ingredient_id, id DESC",
+        )
+        .bind(&ids)
+        .fetch_all(&st.purchases)
+        .await
+        .map_err(err)?;
+        for r in &prows {
+            let id: i64 = r.get("ingredient_id");
+            let pk: Option<i64> = r.get("price_kop");
+            let amt: f64 = r.get("amt");
+            let unit: Option<String> = r.get("parsed_unit");
+            let unit = unit.unwrap_or_else(|| "pcs".to_string());
+            if let Some(pk) = pk {
+                let (base_amt, _) = to_base(amt, &unit);
+                if base_amt > 0.0 {
+                    price_per_base.insert(id, pk as f64 / base_amt);
+                }
+            }
+        }
+    }
+
     let mut groups: Vec<Value> = Vec::new();
     let mut cur_cat: Option<String> = None;
     let mut cur_items: Vec<Value> = Vec::new();
+    let mut total_known: i64 = 0;
+    let mut unknown: i64 = 0;
     for r in &rows {
         let cat: String = r.get("category");
+        let id: i64 = r.get("id");
+        let qty = (r.get::<f64, _>("deficit") * 100.0).round() / 100.0;
+        let est: Option<i64> = price_per_base.get(&id).map(|p| (qty * p).round() as i64);
+        match est {
+            Some(v) => total_known += v,
+            None => unknown += 1,
+        }
         let item = json!({
-            "ingredient_id": r.get::<i64,_>("id"),
+            "ingredient_id": id,
             "name": r.get::<String,_>("name"),
-            "qty": (r.get::<f64,_>("deficit") * 100.0).round() / 100.0,
+            "qty": qty,
             "unit": r.get::<String,_>("base_unit"),
             "bought": r.get::<bool,_>("bought"),
+            "est_kop": est,
         });
         if cur_cat.as_deref() != Some(cat.as_str()) {
             if let Some(c) = cur_cat.take() {
@@ -378,7 +421,13 @@ async fn shopping(State(st): State<AppState>) -> ApiResult {
         })
         .collect();
 
-    Ok(Json(json!({"ok": true, "groups": groups, "manual": manual})))
+    unknown += manual.len() as i64;
+    Ok(Json(json!({
+        "ok": true,
+        "groups": groups,
+        "manual": manual,
+        "estimate": {"total_kop": total_known, "unknown_count": unknown}
+    })))
 }
 
 #[derive(Deserialize)]
@@ -450,6 +499,150 @@ async fn shopping_toggle(State(st): State<AppState>, Json(b): Json<ToggleBody>) 
     )
     .bind(b.ingredient_id).bind(b.bought).execute(&st.kitchen).await.map_err(err)?;
     Ok(Json(json!({"ok": true})))
+}
+
+async fn prices(State(st): State<AppState>) -> ApiResult {
+    // цена за БАЗОВУЮ единицу по каждому ингредиенту: последняя, предыдущая, мин, макс, кол-во точек
+    let rows = sqlx::query(
+        "WITH series AS ( \
+           SELECT ri.ingredient_id AS id, r.created_at AS ts, \
+                  ri.price_kop::float8 / (CASE ri.parsed_unit WHEN 'kg' THEN ri.parsed_amount*1000 WHEN 'l' THEN ri.parsed_amount*1000 ELSE ri.parsed_amount END) AS up \
+           FROM receipt_items ri JOIN receipts r ON r.id = ri.receipt_id \
+           WHERE ri.ingredient_id IS NOT NULL AND ri.price_kop IS NOT NULL AND ri.parsed_amount > 0 ) \
+         SELECT id, (array_agg(up ORDER BY ts DESC))[1] AS latest, (array_agg(up ORDER BY ts DESC))[2] AS prev, \
+                min(up) AS minp, max(up) AS maxp, count(*)::int AS n \
+         FROM series GROUP BY id",
+    )
+    .fetch_all(&st.purchases)
+    .await
+    .map_err(err)?;
+
+    let ids: Vec<i64> = rows.iter().map(|r| r.get::<i64, _>("id")).collect();
+    let mut names: std::collections::HashMap<i64, (String, String)> = std::collections::HashMap::new();
+    if !ids.is_empty() {
+        let nrows = sqlx::query("SELECT id, name, base_unit FROM ingredients WHERE id = ANY($1)")
+            .bind(&ids)
+            .fetch_all(&st.kitchen)
+            .await
+            .map_err(err)?;
+        for r in &nrows {
+            names.insert(
+                r.get::<i64, _>("id"),
+                (r.get::<String, _>("name"), r.get::<String, _>("base_unit")),
+            );
+        }
+    }
+    let mut items: Vec<Value> = rows
+        .iter()
+        .filter_map(|r| {
+            let id: i64 = r.get("id");
+            let (name, base_unit) = names.get(&id)?.clone();
+            Some(json!({
+                "ingredient_id": id, "name": name, "base_unit": base_unit,
+                "latest_kop": r.get::<Option<f64>,_>("latest"),
+                "prev_kop": r.get::<Option<f64>,_>("prev"),
+                "min_kop": r.get::<Option<f64>,_>("minp"),
+                "max_kop": r.get::<Option<f64>,_>("maxp"),
+                "points": r.get::<i32,_>("n"),
+            }))
+        })
+        .collect();
+    items.sort_by(|a, b| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")));
+    Ok(Json(json!({"ok": true, "items": items})))
+}
+
+async fn price_series(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResult {
+    let rows = sqlx::query(
+        "SELECT r.created_at::date::text AS d, \
+                (ri.price_kop::float8 / (CASE ri.parsed_unit WHEN 'kg' THEN ri.parsed_amount*1000 WHEN 'l' THEN ri.parsed_amount*1000 ELSE ri.parsed_amount END)) AS up \
+         FROM receipt_items ri JOIN receipts r ON r.id = ri.receipt_id \
+         WHERE ri.ingredient_id = $1 AND ri.price_kop IS NOT NULL AND ri.parsed_amount > 0 \
+         ORDER BY r.created_at",
+    )
+    .bind(id)
+    .fetch_all(&st.purchases)
+    .await
+    .map_err(err)?;
+    let series: Vec<Value> = rows
+        .iter()
+        .map(|r| json!({"date": r.get::<String,_>("d"), "price_kop": r.get::<f64,_>("up")}))
+        .collect();
+    let nm = sqlx::query("SELECT name, base_unit FROM ingredients WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&st.kitchen)
+        .await
+        .map_err(err)?;
+    let (name, base_unit) = nm
+        .map(|r| (r.get::<String, _>("name"), r.get::<String, _>("base_unit")))
+        .unwrap_or_default();
+    Ok(Json(json!({"ok": true, "ingredient_id": id, "name": name, "base_unit": base_unit, "series": series})))
+}
+
+async fn stats(State(st): State<AppState>) -> ApiResult {
+    // любимые блюда (из выборов меню)
+    let drows = sqlx::query(
+        "SELECT d.name, COUNT(*)::int AS cnt FROM selections s \
+         JOIN dishes d ON d.id = s.dish_id GROUP BY d.name ORDER BY cnt DESC, d.name LIMIT 15",
+    )
+    .fetch_all(&st.kitchen)
+    .await
+    .map_err(err)?;
+    let dishes: Vec<Value> = drows
+        .iter()
+        .map(|r| json!({"name": r.get::<String,_>("name"), "count": r.get::<i32,_>("cnt")}))
+        .collect();
+
+    // расходы (из чеков)
+    let tot = sqlx::query(
+        "SELECT COALESCE(SUM(total_sum_kop),0)::bigint AS total, COUNT(*)::int AS cnt, \
+         COALESCE(AVG(total_sum_kop),0)::bigint AS avg FROM receipts",
+    )
+    .fetch_one(&st.purchases)
+    .await
+    .map_err(err)?;
+    let last30 = sqlx::query(
+        "SELECT COALESCE(SUM(total_sum_kop),0)::bigint AS s FROM receipts \
+         WHERE created_at >= now() - interval '30 days'",
+    )
+    .fetch_one(&st.purchases)
+    .await
+    .map_err(err)?;
+    let cats = sqlx::query(
+        "SELECT COALESCE(NULLIF(parsed_category,''),'Прочее') AS cat, COALESCE(SUM(sum_kop),0)::bigint AS s \
+         FROM receipt_items GROUP BY cat HAVING COALESCE(SUM(sum_kop),0) > 0 ORDER BY s DESC",
+    )
+    .fetch_all(&st.purchases)
+    .await
+    .map_err(err)?;
+    let top = sqlx::query(
+        "SELECT COALESCE(NULLIF(parsed_ingredient,''), raw_name) AS nm, COALESCE(SUM(sum_kop),0)::bigint AS s \
+         FROM receipt_items GROUP BY nm HAVING COALESCE(SUM(sum_kop),0) > 0 ORDER BY s DESC LIMIT 15",
+    )
+    .fetch_all(&st.purchases)
+    .await
+    .map_err(err)?;
+
+    let by_category: Vec<Value> = cats
+        .iter()
+        .map(|r| json!({"category": r.get::<String,_>("cat"), "sum_kop": r.get::<i64,_>("s")}))
+        .collect();
+    let top_products: Vec<Value> = top
+        .iter()
+        .map(|r| json!({"name": r.get::<String,_>("nm"), "sum_kop": r.get::<i64,_>("s")}))
+        .collect();
+
+    Ok(Json(json!({
+        "ok": true,
+        "dishes": dishes,
+        "spending": {
+            "total_kop": tot.get::<i64,_>("total"),
+            "last30_kop": last30.get::<i64,_>("s"),
+            "receipts": tot.get::<i32,_>("cnt"),
+            "avg_basket_kop": tot.get::<i64,_>("avg"),
+            "by_category": by_category,
+            "top_products": top_products
+        }
+    })))
 }
 
 async fn categories(State(st): State<AppState>) -> ApiResult {

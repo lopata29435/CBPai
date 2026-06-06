@@ -10,8 +10,8 @@ body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); col
 .app { max-width: 720px; margin: 0 auto; padding-bottom: 40px; }
 header { padding: 14px 16px; position: sticky; top: 0; background: #000; z-index: 5; }
 header h1 { margin: 0; font-size: 18px; }
-nav { display: flex; gap: 6px; padding: 8px 16px; position: sticky; top: 46px; background: #000; z-index: 4; }
-nav button { flex: 1; background: var(--card); color: #ccc; border: 0; border-radius: 8px; padding: 10px; font-size: 14px; }
+nav { display: flex; gap: 6px; padding: 8px 16px; position: sticky; top: 46px; background: #000; z-index: 4; overflow-x: auto; }
+nav button { flex: 0 0 auto; white-space: nowrap; background: var(--card); color: #ccc; border: 0; border-radius: 8px; padding: 10px 14px; font-size: 14px; }
 nav button.on { background: var(--accent); color: #fff; }
 main { padding: 8px 16px; }
 button { cursor: pointer; }
@@ -56,5 +56,12 @@ li { margin: 4px 0; }
 .addrow input:first-child { flex: 1; min-width: 80px; }
 .addrow button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; width: 40px; font-size: 18px; }
 .del { background: transparent; color: #e74c3c; border: 0; font-size: 16px; }
+.estbar { background: var(--card); border-radius: 10px; padding: 12px 14px; margin: 8px 0; font-size: 16px; }
+.estbar .warn { color: #d8a000; font-size: 12px; margin-top: 6px; }
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+.statcard { background: var(--card); border-radius: 10px; padding: 14px; }
+.statcard .v { font-size: 20px; font-weight: 600; }
+.statcard .k { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.inv span:last-child { white-space: nowrap; }
 .sticky-apply { position: sticky; bottom: 0; background: linear-gradient(180deg, transparent, #111 40%); padding: 12px 0; }
 .sticky-apply button { width: 100%; background: var(--ok); color: #08210f; font-weight: 600; border: 0; border-radius: 10px; padding: 14px; font-size: 16px; }
