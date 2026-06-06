@@ -7,7 +7,22 @@ const SLOTS: [string, string][] = [
   ['snack', 'Перекус']
 ];
 const UNITS = ['g', 'kg', 'ml', 'l', 'pcs'];
-const CATS = ['Овощи и фрукты', 'Мясо и рыба', 'Молочное', 'Бакалея', 'Прочее'];
+const CATS = [
+  'Овощи и фрукты',
+  'Мясо и птица',
+  'Рыба и морепродукты',
+  'Молочное и яйца',
+  'Сыры',
+  'Хлеб и выпечка',
+  'Крупы и макароны',
+  'Бакалея',
+  'Соусы и приправы',
+  'Замороженные продукты',
+  'Полуфабрикаты и готовая еда',
+  'Снеки и сладости',
+  'Напитки',
+  'Прочее'
+];
 
 async function getJSON(url: string) {
   try {
@@ -56,6 +71,12 @@ export function App() {
         {tab === 'inventory' && <Inventory />}
         {tab === 'scan' && <Scan state={scan} setState={setScan} />}
       </main>
+      {(scan.mode === 'loading' || scan.mode === 'applying') && (
+        <div className="overlay">
+          <div className="spinner" />
+          <p>{scan.mode === 'loading' ? 'Распознаю чек…' : 'Переношу в холодильник…'}</p>
+        </div>
+      )}
     </div>
   );
 }
