@@ -86,8 +86,10 @@ async fn main() {
         .route("/api/shopping/add", post(shopping_add))
         .route("/api/shopping/manual-toggle", post(shopping_manual_toggle))
         .route("/api/shopping/manual-delete", post(shopping_manual_delete))
+        .route("/api/shopping/dismiss", post(shopping_dismiss))
         .route("/api/inventory", get(inventory))
         .route("/api/inventory/adjust", post(inventory_adjust))
+        .route("/api/categories", get(categories))
         .route("/api/receipt/scan", post(receipt_scan))
         .route("/api/receipt/apply", post(receipt_apply))
         .layer(TraceLayer::new_for_http())
@@ -156,7 +158,9 @@ async fn week(State(st): State<AppState>) -> ApiResult {
     .await
     .map_err(err)?;
     let sels = sqlx::query(
-        "SELECT day, meal, dish_id, servings FROM selections WHERE week_start = date_trunc('week', now())::date",
+        "SELECT s.day, s.meal, s.dish_id, s.servings, di.name \
+         FROM selections s JOIN dishes di ON di.id = s.dish_id \
+         WHERE s.week_start = date_trunc('week', now())::date",
     )
     .fetch_all(&st.kitchen)
     .await
@@ -192,6 +196,33 @@ async fn week(State(st): State<AppState>) -> ApiResult {
         let servings: i32 = row.get("servings");
         selected.insert(format!("{day}|{meal}"), json!({"dish_id": id, "servings": servings}));
     }
+
+    // перенос выбранного блюда в варианты СЛЕДУЮЩЕГО дня (тот же приём) — готовка впрок
+    for row in &sels {
+        let day: String = row.get("day");
+        let meal: String = row.get("meal");
+        let id: i64 = row.get("dish_id");
+        let name: String = row.get("name");
+        if let Some(pos) = DAYS.iter().position(|d| *d == day) {
+            if pos + 1 < DAYS.len() {
+                let next = DAYS[pos + 1];
+                if let Some(arr) = days
+                    .get_mut(next)
+                    .and_then(|v| v.as_object_mut())
+                    .and_then(|o| o.get_mut(&meal))
+                    .and_then(|v| v.as_array_mut())
+                {
+                    let exists = arr
+                        .iter()
+                        .any(|o| o.get("dish_id").and_then(|x| x.as_i64()) == Some(id));
+                    if !exists {
+                        arr.insert(0, json!({"dish_id": id, "name": name, "carried": true}));
+                    }
+                }
+            }
+        }
+    }
+
     Ok(Json(json!({"ok": true, "days": days, "selected": selected})))
 }
 
@@ -294,7 +325,8 @@ async fn shopping(State(st): State<AppState>) -> ApiResult {
         FROM need n
         LEFT JOIN inventory inv ON inv.ingredient_id = n.id
         LEFT JOIN shopping_list sl ON sl.week_start = date_trunc('week', now())::date AND sl.ingredient_id = n.id
-        WHERE (n.need_base - COALESCE(inv.qty, 0)) > 0
+        WHERE (n.need_base - COALESCE(inv.qty, 0)) > 0.05 * n.need_base
+          AND NOT COALESCE(sl.dismissed, false)
         ORDER BY n.category, n.name
         "#,
     )
@@ -420,10 +452,38 @@ async fn shopping_toggle(State(st): State<AppState>, Json(b): Json<ToggleBody>) 
     Ok(Json(json!({"ok": true})))
 }
 
+async fn categories(State(st): State<AppState>) -> ApiResult {
+    let rows = sqlx::query("SELECT name FROM categories ORDER BY sort_order, name")
+        .fetch_all(&st.kitchen)
+        .await
+        .map_err(err)?;
+    let items: Vec<String> = rows.iter().map(|r| r.get::<String, _>("name")).collect();
+    Ok(Json(json!({"ok": true, "categories": items})))
+}
+
+#[derive(Deserialize)]
+struct DismissBody {
+    ingredient_id: i64,
+}
+
+async fn shopping_dismiss(State(st): State<AppState>, Json(b): Json<DismissBody>) -> ApiResult {
+    sqlx::query(
+        "INSERT INTO shopping_list (week_start, ingredient_id, need_qty, unit, dismissed) \
+         VALUES (date_trunc('week', now())::date, $1, 0, '', true) \
+         ON CONFLICT (week_start, ingredient_id) DO UPDATE SET dismissed = true",
+    )
+    .bind(b.ingredient_id)
+    .execute(&st.kitchen)
+    .await
+    .map_err(err)?;
+    Ok(Json(json!({"ok": true})))
+}
+
 async fn inventory(State(st): State<AppState>) -> ApiResult {
     let rows = sqlx::query(
-        "SELECT i.id, i.name, i.category, i.base_unit, COALESCE(inv.qty, 0)::float8 AS qty \
-         FROM ingredients i LEFT JOIN inventory inv ON inv.ingredient_id = i.id ORDER BY i.category, i.name",
+        "SELECT i.id, i.name, i.category, i.base_unit, inv.qty::float8 AS qty \
+         FROM inventory inv JOIN ingredients i ON i.id = inv.ingredient_id \
+         WHERE inv.qty > 0 ORDER BY i.category, i.name",
     )
     .fetch_all(&st.kitchen).await.map_err(err)?;
     let items: Vec<Value> = rows.iter().map(|r| json!({
@@ -570,17 +630,30 @@ async fn llm_parse_items(st: &AppState, known: &[String], batch: &[Value]) -> Op
          Верни СТРОГО JSON-массив той же длины и в том же порядке, что и вход. Для каждой позиции объект: \
          {\"ingredient\": <понятное каноничное название продукта на русском, в нижнем регистре, без бренда, веса и сокращений>, \
          \"category\": <одна из категорий ниже>, \"amount\": <число: масса/объём/количество>, \"unit\": <g|kg|ml|l|pcs>}. \
-         Правила: расшифровывай сокращения (Припр.=приправа, д/кур.=для курицы, Биойог.=биойогурт, черносл.=чернослив, зам.=замороженный, об.=обезжиренный, мол.=молочный); \
+         Правила: расшифровывай сокращения (Припр.=приправа, д/кур.=для курицы, Биойог.=биойогурт, черносл.=чернослив, зам.=замороженный, об.=обезжиренный, мол.=молочный, ф-к/ф/к=филе-кусок, с/м=свежемороженый, в/к=варёно-копчёный); \
+         учитывай контекст: для рыбы 'жел.' = желтопёрый (тунец жел. = тунец желтопёрый), а НЕ желейный/жёлтый; \
          сохраняй суть продукта и НЕ приводи готовый/замороженный продукт к сырому (гёдза с курицей — это гёдза, а НЕ куриное филе); \
          amount/unit бери из названия ('520' или '520г' -> 520 g; '130г' -> 130 g; '0,93л' -> 0.93 l; '2кг' -> 2 kg), если числа нет — используй quantity с unit pcs; \
          если в списке известных есть РОВНО тот же продукт — используй то имя, иначе придумай корректное название сам; \
          если это не еда (пакет, услуга, посуда) — \"ingredient\": \"\". Без markdown и пояснений.\n",
     );
-    sys.push_str(&format!("Категории: {}.\n", CATEGORIES.join(", ")));
+    let cats: Vec<String> = sqlx::query("SELECT name FROM categories ORDER BY sort_order, name")
+        .fetch_all(&st.kitchen)
+        .await
+        .ok()
+        .map(|rows| rows.iter().map(|r| r.get::<String, _>("name")).collect())
+        .unwrap_or_default();
+    let cats = if cats.is_empty() {
+        CATEGORIES.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+    } else {
+        cats
+    };
+    sys.push_str(&format!("Категории: {}.\n", cats.join(", ")));
     sys.push_str("Примеры:\n");
     sys.push_str("'YOSH.Гедза с курицей зам.520' -> {\"ingredient\":\"гёдза с курицей\",\"category\":\"Замороженные продукты\",\"amount\":520,\"unit\":\"g\"}\n");
     sys.push_str("'АКТИБ.Биойог.с черносл.об.130г' -> {\"ingredient\":\"биойогурт с черносливом\",\"category\":\"Молочное и яйца\",\"amount\":130,\"unit\":\"g\"}\n");
     sys.push_str("'МАРК.ПЕР.Припр.д/кур.с чесн.20г' -> {\"ingredient\":\"приправа для курицы с чесноком\",\"category\":\"Соусы и приправы\",\"amount\":20,\"unit\":\"g\"}\n");
+    sys.push_str("'ЛЮДИ ЛЮБ.Тунец жел.ф-к.зам.400г' -> {\"ingredient\":\"тунец желтопёрый\",\"category\":\"Рыба и морепродукты\",\"amount\":400,\"unit\":\"g\"}\n");
     sys.push_str(&format!("Известные ингредиенты: {}.", known.join(", ")));
     let body = json!({
         "model": st.lemonade_model,

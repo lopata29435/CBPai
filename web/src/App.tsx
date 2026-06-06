@@ -56,6 +56,10 @@ export function App() {
   const [tab, setTab] = useState<'week' | 'shopping' | 'inventory' | 'scan'>('week');
   // состояние сканера живёт здесь -> не теряется при переключении вкладок
   const [scan, setScan] = useState<ScanState>(initScan);
+  const [cats, setCats] = useState<string[]>(CATS);
+  useEffect(() => {
+    getJSON('/api/categories').then((d) => { if (d.ok && d.categories?.length) setCats(d.categories); });
+  }, []);
   return (
     <div className="app">
       <header><h1>🍽 Кухня</h1></header>
@@ -69,7 +73,7 @@ export function App() {
         {tab === 'week' && <Week />}
         {tab === 'shopping' && <Shopping />}
         {tab === 'inventory' && <Inventory />}
-        {tab === 'scan' && <Scan state={scan} setState={setScan} />}
+        {tab === 'scan' && <Scan state={scan} setState={setScan} categories={cats} />}
       </main>
       {(scan.mode === 'loading' || scan.mode === 'applying') && (
         <div className="overlay">
@@ -81,7 +85,7 @@ export function App() {
   );
 }
 
-type Opt = { dish_id: number; name: string };
+type Opt = { dish_id: number; name: string; carried?: boolean };
 type Sel = { dish_id: number; servings: number };
 
 function Week() {
@@ -146,6 +150,7 @@ function Week() {
                     const on = sel?.dish_id === o.dish_id;
                     return (
                       <div key={o.dish_id} className={'card' + (on ? ' sel' : '')} onClick={() => choose(day, k, o.dish_id)}>
+                        {o.carried && <div className="carry">↶ вчерашнее</div>}
                         <div className="t">{o.name}</div>
                         <div className="r" onClick={(e) => { e.stopPropagation(); setRecipe({ id: o.dish_id, servings: sel?.servings ?? 2 }); }}>рецепт →</div>
                       </div>
@@ -213,6 +218,10 @@ function Shopping() {
     setGroups((gs) => gs.map((g) => ({ ...g, items: g.items.map((it: any) => (it.ingredient_id === ingredient_id ? { ...it, bought } : it)) })));
     await postJSON('/api/shopping/toggle', { ingredient_id, bought });
   }
+  async function dismiss(ingredient_id: number) {
+    setGroups((gs) => gs.map((g) => ({ ...g, items: g.items.filter((it: any) => it.ingredient_id !== ingredient_id) })).filter((g) => g.items.length));
+    await postJSON('/api/shopping/dismiss', { ingredient_id });
+  }
   async function add() {
     if (!name.trim()) return;
     await postJSON('/api/shopping/add', { name: name.trim(), qty: qty ? parseFloat(qty) : null, unit });
@@ -234,10 +243,11 @@ function Shopping() {
         <section key={g.category} className="day">
           <h2>{g.category}</h2>
           {g.items.map((it: any) => (
-            <label key={it.ingredient_id} className="buy">
+            <div key={it.ingredient_id} className="buy">
               <input type="checkbox" checked={it.bought} onChange={(e) => toggle(it.ingredient_id, e.target.checked)} />
-              <span style={{ textDecoration: it.bought ? 'line-through' : 'none', opacity: it.bought ? 0.5 : 1 }}>{it.name} — {it.qty} {it.unit}</span>
-            </label>
+              <span style={{ flex: 1, textDecoration: it.bought ? 'line-through' : 'none', opacity: it.bought ? 0.5 : 1 }}>{it.name} — {it.qty} {it.unit}</span>
+              <button className="del" onClick={() => dismiss(it.ingredient_id)}>✕</button>
+            </div>
           ))}
         </section>
       ))}
@@ -245,13 +255,13 @@ function Shopping() {
       <section className="day">
         <h2>Добавлено вручную</h2>
         {manual.map((it) => (
-          <label key={it.id} className="buy">
+          <div key={it.id} className="buy">
             <input type="checkbox" checked={it.bought} onChange={(e) => mToggle(it.id, e.target.checked)} />
             <span style={{ flex: 1, textDecoration: it.bought ? 'line-through' : 'none', opacity: it.bought ? 0.5 : 1 }}>
               {it.name}{it.qty ? ` — ${it.qty} ${it.unit || ''}` : ''}
             </span>
             <button className="del" onClick={() => mDelete(it.id)}>✕</button>
-          </label>
+          </div>
         ))}
         <div className="addrow">
           <input placeholder="что купить" value={name} onChange={(e) => setName(e.target.value)} />
@@ -292,7 +302,8 @@ function Inventory() {
   );
 }
 
-function Scan({ state, setState }: { state: ScanState; setState: (u: ScanState | ((s: ScanState) => ScanState)) => void }) {
+function Scan({ state, setState, categories }: { state: ScanState; setState: (u: ScanState | ((s: ScanState) => ScanState)) => void; categories: string[] }) {
+  const catList = categories.length ? categories : CATS;
   const scannerRef = useRef<any>(null);
   const set = (patch: Partial<ScanState>) => setState((s) => ({ ...s, ...patch }));
 
@@ -382,7 +393,7 @@ function Scan({ state, setState }: { state: ScanState; setState: (u: ScanState |
                 <input value={it.ingredient || ''} placeholder="ингредиент" onChange={(e) => upd(i, 'ingredient', e.target.value)} />
                 <input type="number" value={it.amount ?? ''} onChange={(e) => upd(i, 'amount', parseFloat(e.target.value))} style={{ width: 70 }} />
                 <select value={it.unit || 'pcs'} onChange={(e) => upd(i, 'unit', e.target.value)}>{UNITS.map((u) => <option key={u}>{u}</option>)}</select>
-                <select value={it.category || 'Прочее'} onChange={(e) => upd(i, 'category', e.target.value)}>{CATS.map((c) => <option key={c}>{c}</option>)}</select>
+                <select value={it.category || 'Прочее'} onChange={(e) => upd(i, 'category', e.target.value)}>{catList.map((c) => <option key={c}>{c}</option>)}</select>
               </div>
             </div>
           ))}

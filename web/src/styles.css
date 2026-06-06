@@ -26,6 +26,7 @@ button { cursor: pointer; }
 .card.sel { border-color: var(--ok); }
 .card .t { font-size: 13px; line-height: 1.25; }
 .card .r { font-size: 11px; color: var(--accent); margin-top: 8px; }
+.card .carry { font-size: 10px; color: #d8a000; margin-bottom: 4px; }
 .serv { font-size: 13px; color: var(--muted); margin-top: 6px; display: flex; align-items: center; gap: 8px; }
 .serv button { background: var(--card); color: #fff; border: 0; border-radius: 6px; width: 28px; height: 28px; font-size: 16px; }
 .serv b { color: #eee; }
