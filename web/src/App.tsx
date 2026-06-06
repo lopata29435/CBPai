@@ -311,6 +311,7 @@ function Shopping() {
 
 function Inventory({ categories }: { categories: string[] }) {
   const [items, setItems] = useState<any[]>([]);
+  const [dirty, setDirty] = useState<Record<number, boolean>>({});
   const [name, setName] = useState('');
   const [qty, setQty] = useState('');
   const [unit, setUnit] = useState('g');
@@ -318,11 +319,22 @@ function Inventory({ categories }: { categories: string[] }) {
   async function load() {
     const d = await getJSON('/api/inventory');
     if (d.ok) setItems(d.items || []);
+    setDirty({});
   }
   useEffect(() => { load(); }, []);
-  async function save(ingredient_id: number, qty: number) {
-    await postJSON('/api/inventory/adjust', { ingredient_id, qty });
-    setItems((xs) => xs.map((x) => (x.ingredient_id === ingredient_id ? { ...x, qty } : x)));
+  function editQty(ingredient_id: number, v: string) {
+    setItems((xs) => xs.map((x) => (x.ingredient_id === ingredient_id ? { ...x, qty: v } : x)));
+    setDirty((d) => ({ ...d, [ingredient_id]: true }));
+  }
+  async function saveAll() {
+    const ids = Object.keys(dirty).map(Number);
+    await Promise.all(
+      ids.map((id) => {
+        const it = items.find((x) => x.ingredient_id === id);
+        return postJSON('/api/inventory/adjust', { ingredient_id: id, qty: parseFloat(String(it?.qty)) || 0 });
+      })
+    );
+    load();
   }
   async function add() {
     if (!name.trim() || !qty) return;
@@ -349,17 +361,18 @@ function Inventory({ categories }: { categories: string[] }) {
 
       {!items.length && <p className="muted">Холодильник пуст. Добавь продукт выше или отсканируй чек.</p>}
       {items.map((it) => (
-        <div key={it.ingredient_id} className="inv">
+        <div key={it.ingredient_id} className={'inv' + (dirty[it.ingredient_id] ? ' edited' : '')}>
           <span className="nm" title={it.category}>{it.name}</span>
-          <input
-            type="number"
-            value={it.qty}
-            onChange={(e) => setItems((xs) => xs.map((x) => (x.ingredient_id === it.ingredient_id ? { ...x, qty: e.target.value } : x)))}
-          />
+          <input type="number" value={it.qty} onChange={(e) => editQty(it.ingredient_id, e.target.value)} />
           <span className="u">{it.unit}</span>
-          <button className="savebtn" onClick={() => save(it.ingredient_id, parseFloat(String(it.qty)) || 0)}>Сохранить</button>
         </div>
       ))}
+
+      {Object.keys(dirty).length > 0 && (
+        <div className="sticky-apply">
+          <button onClick={saveAll}>Сохранить изменения ({Object.keys(dirty).length})</button>
+        </div>
+      )}
     </div>
   );
 }
