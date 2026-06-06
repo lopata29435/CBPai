@@ -53,7 +53,10 @@ type ScanState = {
 const initScan: ScanState = { mode: 'idle', err: '', manual: '', receipt: null, items: [] };
 
 export function App() {
-  const [tab, setTab] = useState<'week' | 'shopping' | 'inventory' | 'scan' | 'stats' | 'prices'>('week');
+  const [tab, setTab] = useState<'week' | 'shopping' | 'inventory' | 'scan' | 'stats' | 'prices'>(
+    () => (localStorage.getItem('cbpai.tab') as any) || 'week'
+  );
+  useEffect(() => { localStorage.setItem('cbpai.tab', tab); }, [tab]);
   // состояние сканера живёт здесь -> не теряется при переключении вкладок
   const [scan, setScan] = useState<ScanState>(initScan);
   const [cats, setCats] = useState<string[]>(CATS);
@@ -347,10 +350,14 @@ function Inventory({ categories }: { categories: string[] }) {
       {!items.length && <p className="muted">Холодильник пуст. Добавь продукт выше или отсканируй чек.</p>}
       {items.map((it) => (
         <div key={it.ingredient_id} className="inv">
-          <span className="nm">{it.name}</span>
-          <input type="number" defaultValue={it.qty} onBlur={(e) => save(it.ingredient_id, parseFloat(e.target.value) || 0)} />
+          <span className="nm" title={it.category}>{it.name}</span>
+          <input
+            type="number"
+            value={it.qty}
+            onChange={(e) => setItems((xs) => xs.map((x) => (x.ingredient_id === it.ingredient_id ? { ...x, qty: e.target.value } : x)))}
+          />
           <span className="u">{it.unit}</span>
-          <span className="cat">{it.category}</span>
+          <button className="savebtn" onClick={() => save(it.ingredient_id, parseFloat(String(it.qty)) || 0)}>Сохранить</button>
         </div>
       ))}
     </div>
@@ -430,7 +437,12 @@ function Prices() {
           <div key={it.ingredient_id}>
             <div className="inv" onClick={() => toggle(it.ingredient_id)} style={{ cursor: 'pointer' }}>
               <span className="nm">{it.name}</span>
-              <span>{priceLine(it.latest_kop, it.unit_label)}</span>
+              <span>
+                {priceLine(it.latest_kop, it.unit_label)}
+                {it.per_kg_kop && it.per_kg_label && it.per_kg_label !== it.unit_label
+                  ? <span className="muted" style={{ fontSize: 12 }}> · {priceLine(it.per_kg_kop, it.per_kg_label)}</span>
+                  : null}
+              </span>
               <span style={{ width: 56, textAlign: 'right', fontSize: 12, color: change == null ? 'var(--muted)' : change > 0 ? '#e74c3c' : '#2ecc71' }}>
                 {change == null ? '' : (change > 0 ? '▲' : '▼') + Math.abs(change).toFixed(0) + '%'}
               </span>

@@ -536,13 +536,19 @@ async fn prices(State(st): State<AppState>) -> ApiResult {
     let rows = sqlx::query(
         "WITH s AS ( \
            SELECT ri.ingredient_id AS id, r.created_at AS ts, ri.price_kop::float8 AS pk, \
-                  ri.quantity::float8 AS q, ri.parsed_unit AS u \
+                  ri.quantity::float8 AS q, ri.parsed_unit AS u, \
+                  (ri.sum_kop::float8 / NULLIF( \
+                     (CASE ri.parsed_unit WHEN 'kg' THEN ri.parsed_amount*1000 WHEN 'l' THEN ri.parsed_amount*1000 ELSE ri.parsed_amount END) \
+                     * (CASE WHEN ri.quantity = floor(ri.quantity) AND ri.quantity >= 1 THEN ri.quantity ELSE 1 END), 0)) AS pb, \
+                  (CASE WHEN ri.parsed_unit IN ('kg','g') THEN 'g' WHEN ri.parsed_unit IN ('l','ml') THEN 'ml' ELSE 'pcs' END) AS bu \
            FROM receipt_items ri JOIN receipts r ON r.id = ri.receipt_id \
            WHERE ri.ingredient_id IS NOT NULL AND ri.price_kop IS NOT NULL ) \
          SELECT id, (array_agg(pk ORDER BY ts DESC))[1] AS latest, (array_agg(pk ORDER BY ts DESC))[2] AS prev, \
                 min(pk) AS minp, max(pk) AS maxp, count(*)::int AS n, \
                 (array_agg(q ORDER BY ts DESC))[1] AS last_q, \
-                (array_agg(u ORDER BY ts DESC))[1] AS last_unit \
+                (array_agg(u ORDER BY ts DESC))[1] AS last_unit, \
+                (array_agg(pb ORDER BY ts DESC))[1] AS last_pb, \
+                (array_agg(bu ORDER BY ts DESC))[1] AS last_bu \
          FROM s GROUP BY id",
     )
     .fetch_all(&st.purchases)
@@ -568,6 +574,13 @@ async fn prices(State(st): State<AppState>) -> ApiResult {
             let name = names.get(&id)?.clone();
             let last_q: Option<f64> = r.get("last_q");
             let last_unit: Option<String> = r.get("last_unit");
+            let last_pb: Option<f64> = r.get("last_pb");
+            let last_bu: Option<String> = r.get("last_bu");
+            let (per_kg_kop, per_kg_label) = match (last_pb, last_bu.as_deref()) {
+                (Some(pb), Some("g")) => (Some(pb * 1000.0), Some("₽/кг")),
+                (Some(pb), Some("ml")) => (Some(pb * 1000.0), Some("₽/л")),
+                _ => (None, None),
+            };
             Some(json!({
                 "ingredient_id": id, "name": name,
                 "unit_label": price_label(last_q, last_unit.as_deref()),
@@ -576,6 +589,8 @@ async fn prices(State(st): State<AppState>) -> ApiResult {
                 "min_kop": r.get::<Option<f64>,_>("minp"),
                 "max_kop": r.get::<Option<f64>,_>("maxp"),
                 "points": r.get::<i32,_>("n"),
+                "per_kg_kop": per_kg_kop,
+                "per_kg_label": per_kg_label,
             }))
         })
         .collect();
