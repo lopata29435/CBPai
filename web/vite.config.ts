@@ -8,12 +8,12 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
-        name: 'Кухня',
-        short_name: 'Кухня',
+        name: 'CBPai',
+        short_name: 'CBPai',
         start_url: '/',
         display: 'standalone',
-        background_color: '#111111',
-        theme_color: '#111111',
+        background_color: '#0e0f13',
+        theme_color: '#0e0f13',
         icons: []
       }
     })

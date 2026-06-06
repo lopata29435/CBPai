@@ -60,17 +60,23 @@ export function App() {
   useEffect(() => {
     getJSON('/api/categories').then((d) => { if (d.ok && d.categories?.length) setCats(d.categories); });
   }, []);
+  const TABS: [typeof tab, string, string][] = [
+    ['week', '📅', 'Неделя'],
+    ['shopping', '🛒', 'Покупки'],
+    ['inventory', '🧊', 'Холодильник'],
+    ['scan', '🧾', 'Чек'],
+    ['stats', '📊', 'Статистика'],
+    ['prices', '🏷️', 'Цены']
+  ];
+  const titles: Record<string, string> = {
+    week: 'Меню недели', shopping: 'Покупки', inventory: 'Холодильник', scan: 'Сканировать чек', stats: 'Статистика', prices: 'Цены'
+  };
   return (
     <div className="app">
-      <header><h1>🍽 Кухня</h1></header>
-      <nav>
-        <button className={tab === 'week' ? 'on' : ''} onClick={() => setTab('week')}>Неделя</button>
-        <button className={tab === 'shopping' ? 'on' : ''} onClick={() => setTab('shopping')}>Покупки</button>
-        <button className={tab === 'inventory' ? 'on' : ''} onClick={() => setTab('inventory')}>Холодильник</button>
-        <button className={tab === 'scan' ? 'on' : ''} onClick={() => setTab('scan')}>Чек</button>
-        <button className={tab === 'stats' ? 'on' : ''} onClick={() => setTab('stats')}>Статистика</button>
-        <button className={tab === 'prices' ? 'on' : ''} onClick={() => setTab('prices')}>Цены</button>
-      </nav>
+      <header>
+        <span className="brand">CBP<span className="brand-ai">ai</span></span>
+        <span className="screen">{titles[tab]}</span>
+      </header>
       <main>
         {tab === 'week' && <Week />}
         {tab === 'shopping' && <Shopping />}
@@ -79,6 +85,14 @@ export function App() {
         {tab === 'stats' && <Stats />}
         {tab === 'prices' && <Prices />}
       </main>
+      <nav className="tabbar">
+        {TABS.map(([id, icon, label]) => (
+          <button key={id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>
+            <span className="i">{icon}</span>
+            <span className="l">{label}</span>
+          </button>
+        ))}
+      </nav>
       {(scan.mode === 'loading' || scan.mode === 'applying') && (
         <div className="overlay">
           <div className="spinner" />
