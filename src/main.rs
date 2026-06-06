@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use std::net::SocketAddr;
+use tower_http::trace::TraceLayer;
 
 const DAYS: [&str; 7] = [
     "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье",
@@ -18,6 +19,7 @@ const CATEGORIES: [&str; 5] = [
 type ApiResult = Result<Json<Value>, (StatusCode, String)>;
 
 fn err<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
+    tracing::error!("api error: {e}");
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
@@ -33,6 +35,12 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "info,tower_http=info,kitchen_app=info".into()),
+        )
+        .init();
+
     let kitchen_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://kitchen:kitchen@localhost:5432/kitchen".to_string());
     let purchases_url = std::env::var("DATABASE_URL_PURCHASES")
@@ -62,10 +70,14 @@ async fn main() {
         .route("/api/dish/:id", get(dish))
         .route("/api/shopping", get(shopping))
         .route("/api/shopping/toggle", post(shopping_toggle))
+        .route("/api/shopping/add", post(shopping_add))
+        .route("/api/shopping/manual-toggle", post(shopping_manual_toggle))
+        .route("/api/shopping/manual-delete", post(shopping_manual_delete))
         .route("/api/inventory", get(inventory))
         .route("/api/inventory/adjust", post(inventory_adjust))
         .route("/api/receipt/scan", post(receipt_scan))
         .route("/api/receipt/apply", post(receipt_apply))
+        .layer(TraceLayer::new_for_http())
         .with_state(state)
         .fallback(move |uri: Uri| {
             let base = base.clone();
@@ -189,7 +201,9 @@ async fn generate_week(State(st): State<AppState>) -> ApiResult {
     .execute(&st.kitchen)
     .await
     .map_err(err)?;
-    Ok(Json(json!({"ok": true, "options": res.rows_affected()})))
+    let n = res.rows_affected();
+    tracing::info!("generate-week: добавлено {n} вариантов");
+    Ok(Json(json!({"ok": true, "options": n})))
 }
 
 #[derive(Deserialize)]
@@ -297,7 +311,84 @@ async fn shopping(State(st): State<AppState>) -> ApiResult {
     if let Some(c) = cur_cat.take() {
         groups.push(json!({"category": c, "items": cur_items}));
     }
-    Ok(Json(json!({"ok": true, "groups": groups})))
+
+    // позиции, добавленные вручную
+    let manual_rows = sqlx::query(
+        "SELECT id, name, qty::float8 AS qty, unit, bought FROM shopping_manual \
+         WHERE week_start = date_trunc('week', now())::date ORDER BY id",
+    )
+    .fetch_all(&st.kitchen)
+    .await
+    .map_err(err)?;
+    let manual: Vec<Value> = manual_rows
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.get::<i64,_>("id"),
+                "name": r.get::<String,_>("name"),
+                "qty": r.get::<Option<f64>,_>("qty"),
+                "unit": r.get::<Option<String>,_>("unit"),
+                "bought": r.get::<bool,_>("bought"),
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({"ok": true, "groups": groups, "manual": manual})))
+}
+
+#[derive(Deserialize)]
+struct AddBody {
+    name: String,
+    qty: Option<f64>,
+    unit: Option<String>,
+}
+
+async fn shopping_add(State(st): State<AppState>, Json(b): Json<AddBody>) -> ApiResult {
+    let name = b.name.trim();
+    if name.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "пустое название".into()));
+    }
+    sqlx::query(
+        "INSERT INTO shopping_manual (week_start, name, qty, unit) \
+         VALUES (date_trunc('week', now())::date, $1, $2, $3)",
+    )
+    .bind(name)
+    .bind(b.qty)
+    .bind(b.unit.as_deref())
+    .execute(&st.kitchen)
+    .await
+    .map_err(err)?;
+    Ok(Json(json!({"ok": true})))
+}
+
+#[derive(Deserialize)]
+struct ManualToggleBody {
+    id: i64,
+    bought: bool,
+}
+
+async fn shopping_manual_toggle(State(st): State<AppState>, Json(b): Json<ManualToggleBody>) -> ApiResult {
+    sqlx::query("UPDATE shopping_manual SET bought = $2 WHERE id = $1")
+        .bind(b.id)
+        .bind(b.bought)
+        .execute(&st.kitchen)
+        .await
+        .map_err(err)?;
+    Ok(Json(json!({"ok": true})))
+}
+
+#[derive(Deserialize)]
+struct ManualDeleteBody {
+    id: i64,
+}
+
+async fn shopping_manual_delete(State(st): State<AppState>, Json(b): Json<ManualDeleteBody>) -> ApiResult {
+    sqlx::query("DELETE FROM shopping_manual WHERE id = $1")
+        .bind(b.id)
+        .execute(&st.kitchen)
+        .await
+        .map_err(err)?;
+    Ok(Json(json!({"ok": true})))
 }
 
 #[derive(Deserialize)]

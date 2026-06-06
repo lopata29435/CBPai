@@ -1,7 +1,7 @@
 -- БД kitchen: пересоздание с нуля.
 -- Применить: docker exec -i postgres psql -U kitchen -d kitchen < db/kitchen.sql
 
-DROP TABLE IF EXISTS shopping_list, selections, weekly_options,
+DROP TABLE IF EXISTS shopping_manual, shopping_list, selections, weekly_options,
                      dish_ingredients, inventory, dishes, ingredients CASCADE;
 
 -- Каноничные ингредиенты (заполняешь в DataGrip)
@@ -70,4 +70,15 @@ CREATE TABLE shopping_list (
   unit          TEXT NOT NULL,
   bought        BOOLEAN NOT NULL DEFAULT false,
   UNIQUE (week_start, ingredient_id)
+);
+
+-- Позиции, добавленные вручную (не из меню)
+CREATE TABLE shopping_manual (
+  id         BIGSERIAL PRIMARY KEY,
+  week_start DATE NOT NULL,
+  name       TEXT NOT NULL,
+  qty        NUMERIC,
+  unit       TEXT,
+  bought     BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
