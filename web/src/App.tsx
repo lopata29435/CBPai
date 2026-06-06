@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const SLOTS: [string, string][] = [
   ['breakfast', 'Завтрак'],
@@ -21,7 +21,7 @@ async function postJSON(url: string, body: any) {
 }
 
 export function App() {
-  const [tab, setTab] = useState<'week' | 'shopping' | 'inventory'>('week');
+  const [tab, setTab] = useState<'week' | 'shopping' | 'inventory' | 'scan'>('week');
   return (
     <div className="app">
       <header>
@@ -31,11 +31,13 @@ export function App() {
         <button className={tab === 'week' ? 'on' : ''} onClick={() => setTab('week')}>Неделя</button>
         <button className={tab === 'shopping' ? 'on' : ''} onClick={() => setTab('shopping')}>Покупки</button>
         <button className={tab === 'inventory' ? 'on' : ''} onClick={() => setTab('inventory')}>Холодильник</button>
+        <button className={tab === 'scan' ? 'on' : ''} onClick={() => setTab('scan')}>Чек</button>
       </nav>
       <main>
         {tab === 'week' && <Week />}
         {tab === 'shopping' && <Shopping />}
         {tab === 'inventory' && <Inventory />}
+        {tab === 'scan' && <Scan />}
       </main>
     </div>
   );
@@ -215,6 +217,134 @@ function Inventory() {
         </div>
       ))}
       <p className="muted">Изменил число → клик вне поля сохраняет.</p>
+    </div>
+  );
+}
+
+const UNITS = ['g', 'kg', 'ml', 'l', 'pcs'];
+const CATS = ['Овощи и фрукты', 'Мясо и рыба', 'Молочное', 'Бакалея', 'Прочее'];
+
+function Scan() {
+  const [mode, setMode] = useState<'idle' | 'scanning' | 'preview' | 'applying' | 'done'>('idle');
+  const [err, setErr] = useState('');
+  const [manual, setManual] = useState('');
+  const [receipt, setReceipt] = useState<any>(null);
+  const [items, setItems] = useState<any[]>([]);
+  const scannerRef = useRef<any>(null);
+
+  async function startCamera() {
+    setErr('');
+    setMode('scanning');
+    try {
+      const { Html5Qrcode } = await import('html5-qrcode');
+      const s = new Html5Qrcode('reader');
+      scannerRef.current = s;
+      await s.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: 250 },
+        (text: string) => {
+          stopCamera();
+          handleQr(text);
+        },
+        () => {}
+      );
+    } catch (e: any) {
+      setErr('Камера недоступна: ' + e);
+      setMode('idle');
+    }
+  }
+  async function stopCamera() {
+    try {
+      await scannerRef.current?.stop();
+    } catch {}
+    scannerRef.current = null;
+  }
+  async function handleQr(qrraw: string) {
+    setMode('preview');
+    setErr('');
+    setReceipt(null);
+    setItems([]);
+    const d = await postJSON('/api/receipt/scan', { qrraw });
+    if (!d.ok) {
+      setErr(d.error || 'ошибка распознавания');
+      setMode('idle');
+      return;
+    }
+    setReceipt(d.receipt);
+    setItems((d.items || []).map((x: any) => ({ ...x, include: true })));
+  }
+  function upd(i: number, k: string, v: any) {
+    setItems((xs) => xs.map((x, idx) => (idx === i ? { ...x, [k]: v } : x)));
+  }
+  async function apply() {
+    setMode('applying');
+    const d = await postJSON('/api/receipt/apply', { receipt, items: items.filter((x) => x.include) });
+    if (!d.ok) {
+      setErr(d.error || 'ошибка');
+      setMode('preview');
+      return;
+    }
+    setMode('done');
+  }
+
+  if (mode === 'done')
+    return (
+      <div>
+        <p>✅ Чек применён, холодильник обновлён.</p>
+        <div className="row"><button onClick={() => { setItems([]); setReceipt(null); setMode('idle'); }}>Сканировать ещё</button></div>
+      </div>
+    );
+
+  return (
+    <div>
+      {err && <p style={{ color: '#e74c3c' }}>{err}</p>}
+      {mode === 'idle' && (
+        <>
+          <div className="row"><button onClick={startCamera}>📷 Сканировать чек</button></div>
+          <p className="muted">или вставь строку из QR вручную:</p>
+          <textarea
+            value={manual}
+            onChange={(e) => setManual(e.target.value)}
+            placeholder="t=...&s=...&fn=...&i=...&fp=...&n=1"
+            style={{ width: '100%', height: 60, background: '#1c1c1e', color: '#eee', border: '1px solid #333', borderRadius: 8, padding: 8 }}
+          />
+          <div className="row"><button onClick={() => handleQr(manual.trim())} disabled={!manual.trim()}>Распознать</button></div>
+        </>
+      )}
+      {mode === 'scanning' && (
+        <>
+          <div id="reader" style={{ width: '100%' }}></div>
+          <div className="row"><button onClick={() => { stopCamera(); setMode('idle'); }}>Отмена</button></div>
+        </>
+      )}
+      {(mode === 'preview' || mode === 'applying') && (
+        <>
+          {receipt && (
+            <p className="muted">
+              {(receipt.retailer || 'Чек')}{receipt.total_sum_kop ? ' · ' + (receipt.total_sum_kop / 100).toFixed(2) + ' ₽' : ''}
+            </p>
+          )}
+          {items.map((it, i) => (
+            <div key={i} className="ritem">
+              <label className="rh">
+                <input type="checkbox" checked={it.include} onChange={(e) => upd(i, 'include', e.target.checked)} /> {it.raw_name}
+                {it.price_kop ? <span className="muted"> · {(it.price_kop / 100).toFixed(2)} ₽</span> : null}
+              </label>
+              <div className="rf">
+                <input value={it.ingredient || ''} placeholder="ингредиент" onChange={(e) => upd(i, 'ingredient', e.target.value)} />
+                <input type="number" value={it.amount ?? ''} onChange={(e) => upd(i, 'amount', parseFloat(e.target.value))} style={{ width: 70 }} />
+                <select value={it.unit || 'pcs'} onChange={(e) => upd(i, 'unit', e.target.value)}>
+                  {UNITS.map((u) => <option key={u}>{u}</option>)}
+                </select>
+                <select value={it.category || 'Прочее'} onChange={(e) => upd(i, 'category', e.target.value)}>
+                  {CATS.map((c) => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+            </div>
+          ))}
+          <div className="row"><button onClick={apply} disabled={mode === 'applying'}>{mode === 'applying' ? 'Применяю…' : 'Применить в холодильник'}</button></div>
+        </>
+      )}
     </div>
   );
 }

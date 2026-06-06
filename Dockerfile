@@ -11,6 +11,9 @@ RUN npm run build
 # --- 2) сборка бэкенда (Rust) ---
 FROM rust:1-slim AS build
 WORKDIR /app
+# OpenSSL для reqwest(native-tls)
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 # Сначала только манифесты — кэшируем слой зависимостей.
 COPY Cargo.toml Cargo.lock* ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
@@ -21,7 +24,7 @@ RUN touch src/main.rs && cargo build --release
 # --- 3) runtime ---
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/target/release/kitchen-app /app/kitchen-app
 COPY --from=web /web/dist /app/static

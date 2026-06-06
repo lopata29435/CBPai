@@ -40,3 +40,9 @@ button { cursor: pointer; }
 .box { max-width: 640px; margin: 0 auto; background: var(--card); border-radius: 12px; padding: 16px; }
 .box button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px 14px; margin-top: 8px; }
 li { margin: 4px 0; }
+.ritem { padding: 8px 0; border-bottom: 1px solid #222; }
+.rh { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.rf { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.rf input, .rf select { background: var(--card); color: #eee; border: 1px solid #333; border-radius: 6px; padding: 6px; }
+.rf input:first-child { flex: 1; min-width: 120px; }
+#reader { border-radius: 12px; overflow: hidden; }
