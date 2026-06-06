@@ -35,10 +35,13 @@ CREATE TABLE receipt_items (
   applied           BOOLEAN NOT NULL DEFAULT false
 );
 
--- Обученные соответствия "имя из чека -> ингредиент"
+-- Обученный кэш "имя из чека -> разобранный продукт" (полное значение)
 CREATE TABLE ingredient_aliases (
   alias           TEXT PRIMARY KEY,   -- нормализованное имя из чека
   ingredient_id   BIGINT,
   ingredient_name TEXT,
+  parsed_category TEXT,               -- категория
+  parsed_amount   NUMERIC,            -- грамовка/объём
+  parsed_unit     TEXT,               -- g/kg/ml/l/pcs
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );

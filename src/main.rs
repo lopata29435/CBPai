@@ -557,21 +557,33 @@ async fn receipt_scan(State(st): State<AppState>, Json(b): Json<ScanBody>) -> Ap
         let quantity = it["quantity"].as_f64();
         let sum = it["sum"].as_i64();
         let alias_key = norm(&name);
-        let al = sqlx::query("SELECT ingredient_id, ingredient_name FROM ingredient_aliases WHERE alias = $1")
-            .bind(&alias_key)
-            .fetch_optional(&st.purchases)
-            .await
-            .map_err(err)?;
+        let al = sqlx::query(
+            "SELECT ingredient_id, ingredient_name, parsed_category, \
+             parsed_amount::float8 AS parsed_amount, parsed_unit \
+             FROM ingredient_aliases WHERE alias = $1",
+        )
+        .bind(&alias_key)
+        .fetch_optional(&st.purchases)
+        .await
+        .map_err(err)?;
         let mut item = json!({
             "raw_name": name, "price_kop": price, "quantity": quantity, "sum_kop": sum,
             "ingredient": Value::Null, "ingredient_id": Value::Null,
             "category": "Прочее", "amount": quantity, "unit": "pcs", "from_alias": false
         });
         if let Some(a) = al {
-            let iid: Option<i64> = a.get("ingredient_id");
-            let iname: Option<String> = a.get("ingredient_name");
-            item["ingredient"] = json!(iname);
-            item["ingredient_id"] = json!(iid);
+            // точное совпадение — берём из кэша всё (имя, категория, грамовка, единица)
+            item["ingredient"] = json!(a.get::<Option<String>, _>("ingredient_name"));
+            item["ingredient_id"] = json!(a.get::<Option<i64>, _>("ingredient_id"));
+            if let Ok(Some(c)) = a.try_get::<Option<String>, _>("parsed_category") {
+                item["category"] = json!(c);
+            }
+            if let Ok(Some(am)) = a.try_get::<Option<f64>, _>("parsed_amount") {
+                item["amount"] = json!(am);
+            }
+            if let Ok(Some(u)) = a.try_get::<Option<String>, _>("parsed_unit") {
+                item["unit"] = json!(u);
+            }
             item["from_alias"] = json!(true);
         } else {
             unknown_idx.push(out.len());
@@ -775,10 +787,20 @@ async fn receipt_apply(State(st): State<AppState>, Json(b): Json<ApplyBody>) -> 
                 applied += 1;
             }
             sqlx::query(
-                "INSERT INTO ingredient_aliases (alias, ingredient_id, ingredient_name) VALUES ($1,$2,$3) \
-                 ON CONFLICT (alias) DO UPDATE SET ingredient_id = EXCLUDED.ingredient_id, ingredient_name = EXCLUDED.ingredient_name",
+                "INSERT INTO ingredient_aliases \
+                 (alias, ingredient_id, ingredient_name, parsed_category, parsed_amount, parsed_unit) \
+                 VALUES ($1,$2,$3,$4,$5::numeric,$6) \
+                 ON CONFLICT (alias) DO UPDATE SET \
+                   ingredient_id = EXCLUDED.ingredient_id, ingredient_name = EXCLUDED.ingredient_name, \
+                   parsed_category = EXCLUDED.parsed_category, parsed_amount = EXCLUDED.parsed_amount, \
+                   parsed_unit = EXCLUDED.parsed_unit",
             )
-            .bind(norm(&it.raw_name)).bind(iid).bind(ing_name.as_deref())
+            .bind(norm(&it.raw_name))
+            .bind(iid)
+            .bind(ing_name.as_deref())
+            .bind(&category)
+            .bind(amount)
+            .bind(&unit)
             .execute(&st.purchases)
             .await
             .map_err(err)?;
