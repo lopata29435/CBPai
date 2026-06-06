@@ -116,6 +116,17 @@ fn norm(s: &str) -> String {
     s.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Превращает JSON-значение (строку/число/прочее) в Option<String> — proverkacheka
+/// присылает ФД/ФПД числами, а ФН/ИНН иногда строками.
+fn vstr(v: &Option<Value>) -> Option<String> {
+    match v {
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        None | Some(Value::Null) => None,
+        Some(other) => Some(other.to_string()),
+    }
+}
+
 /// перевод в базовую единицу: kg->g, l->ml, остальное без изменений
 fn to_base(amount: f64, unit: &str) -> (f64, &'static str) {
     match unit {
@@ -819,6 +830,15 @@ async fn receipt_scan(State(st): State<AppState>, Json(b): Json<ScanBody>) -> Ap
         }
     }
 
+    // весовой товар: дробное количество = фактический вес/объём (а не число из названия "1кг")
+    for item in out.iter_mut() {
+        if let Some(q) = item.get("quantity").and_then(|x| x.as_f64()) {
+            if q > 0.0 && q.fract().abs() > 0.001 {
+                item["amount"] = json!(q);
+            }
+        }
+    }
+
     let receipt_meta = json!({
         "fn": j["fiscalDriveNumber"], "fd": j["fiscalDocumentNumber"], "fp": j["fiscalSign"],
         "t": v["request"]["manual"]["check_time"].as_str().or_else(|| j["dateTime"].as_str()),
@@ -838,7 +858,8 @@ async fn llm_parse_items(st: &AppState, known: &[String], batch: &[Value]) -> Op
          Правила: расшифровывай сокращения (Припр.=приправа, д/кур.=для курицы, Биойог.=биойогурт, черносл.=чернослив, зам.=замороженный, об.=обезжиренный, мол.=молочный, ф-к/ф/к=филе-кусок, с/м=свежемороженый, в/к=варёно-копчёный); \
          учитывай контекст: для рыбы 'жел.' = желтопёрый (тунец жел. = тунец желтопёрый), а НЕ желейный/жёлтый; \
          сохраняй суть продукта и НЕ приводи готовый/замороженный продукт к сырому (гёдза с курицей — это гёдза, а НЕ куриное филе); \
-         amount/unit бери из названия ('520' или '520г' -> 520 g; '130г' -> 130 g; '0,93л' -> 0.93 l; '2кг' -> 2 kg), если числа нет — используй quantity с unit pcs; \
+         amount/unit бери из названия ('520' или '520г' -> 520 g; '130г' -> 130 g; '0,93л' -> 0.93 l; '2кг' -> 2 kg), если числа нет — amount=1, unit=pcs; \
+         для весового товара (фрукты/овощи/мясо на развес) unit бери из названия (обычно kg или l), amount можно 1 — фактический вес система подставит из количества; \
          если в списке известных есть РОВНО тот же продукт — используй то имя, иначе придумай корректное название сам; \
          если это не еда (пакет, услуга, посуда) — \"ingredient\": \"\". Без markdown и пояснений.\n",
     );
@@ -859,6 +880,7 @@ async fn llm_parse_items(st: &AppState, known: &[String], batch: &[Value]) -> Op
     sys.push_str("'АКТИБ.Биойог.с черносл.об.130г' -> {\"ingredient\":\"биойогурт с черносливом\",\"category\":\"Молочное и яйца\",\"amount\":130,\"unit\":\"g\"}\n");
     sys.push_str("'МАРК.ПЕР.Припр.д/кур.с чесн.20г' -> {\"ingredient\":\"приправа для курицы с чесноком\",\"category\":\"Соусы и приправы\",\"amount\":20,\"unit\":\"g\"}\n");
     sys.push_str("'ЛЮДИ ЛЮБ.Тунец жел.ф-к.зам.400г' -> {\"ingredient\":\"тунец желтопёрый\",\"category\":\"Рыба и морепродукты\",\"amount\":400,\"unit\":\"g\"}\n");
+    sys.push_str("'Бананы 1кг' (весовой) -> {\"ingredient\":\"бананы\",\"category\":\"Овощи и фрукты\",\"amount\":1,\"unit\":\"kg\"}\n");
     sys.push_str(&format!("Известные ингредиенты: {}.", known.join(", ")));
     let body = json!({
         "model": st.lemonade_model,
@@ -898,12 +920,12 @@ struct ApplyItem {
 #[derive(Deserialize)]
 struct ApplyReceipt {
     #[serde(rename = "fn")]
-    fn_: Option<String>,
-    fd: Option<String>,
-    fp: Option<String>,
+    fn_: Option<Value>,
+    fd: Option<Value>,
+    fp: Option<Value>,
     t: Option<String>,
     retailer: Option<String>,
-    retailer_inn: Option<String>,
+    retailer_inn: Option<Value>,
     total_sum_kop: Option<i64>,
     raw_qr: Option<String>,
     raw_json: Option<Value>,
@@ -922,8 +944,8 @@ async fn receipt_apply(State(st): State<AppState>, Json(b): Json<ApplyBody>) -> 
         "INSERT INTO receipts (fn, fd, fp, t, retailer, retailer_inn, total_sum_kop, raw_qr, raw_json) \
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) RETURNING id",
     )
-    .bind(&r.fn_).bind(&r.fd).bind(&r.fp).bind(&r.t).bind(&r.retailer)
-    .bind(&r.retailer_inn).bind(r.total_sum_kop).bind(&r.raw_qr).bind(&raw_json_str)
+    .bind(vstr(&r.fn_)).bind(vstr(&r.fd)).bind(vstr(&r.fp)).bind(&r.t).bind(&r.retailer)
+    .bind(vstr(&r.retailer_inn)).bind(r.total_sum_kop).bind(&r.raw_qr).bind(&raw_json_str)
     .fetch_one(&st.purchases)
     .await
     .map_err(err)?;
