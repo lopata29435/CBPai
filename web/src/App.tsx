@@ -504,6 +504,7 @@ function Scan({ state, setState, categories }: { state: ScanState; setState: (u:
   const [mfp, setMfp] = useState('');
   const [mdt, setMdt] = useState('');
   const [ms, setMs] = useState('');
+  const [mn, setMn] = useState('1');
 
   // при уходе с вкладки — гасим камеру (превью/состояние остаются в App)
   useEffect(() => {
@@ -537,8 +538,20 @@ function Scan({ state, setState, categories }: { state: ScanState; setState: (u:
   }
   function handleQr(qrraw: string) { recognize({ qrraw }); }
   function recognizeManual() {
-    const t = mdt.replace(/[-:]/g, '').slice(0, 13); // 2026-06-01T18:37 -> 20260601T1837
-    recognize({ fn: mfn.trim(), fd: mfd.trim(), fp: mfp.trim(), t, s: ms.trim(), n: '1' });
+    const t = mdt ? mdt.replace(/[-:]/g, '').slice(0, 13) : ''; // 2026-06-01T18:37 -> 20260601T1837
+    recognize({ fn: mfn.trim(), fd: mfd.trim(), fp: mfp.trim(), t, s: ms.trim(), n: mn });
+  }
+  async function scanImage(file: File) {
+    set({ mode: 'loading', err: '' });
+    try {
+      const { Html5Qrcode } = await import('html5-qrcode');
+      const q = new (Html5Qrcode as any)('filereader');
+      const text = await q.scanFile(file, false);
+      try { await q.clear(); } catch {}
+      handleQr(text);
+    } catch (e) {
+      set({ err: 'Не удалось найти QR на изображении: ' + e, mode: 'idle' });
+    }
   }
   function upd(i: number, k: string, v: any) {
     setState((s) => ({ ...s, items: s.items.map((x, idx) => (idx === i ? { ...x, [k]: v } : x)) }));
@@ -565,7 +578,13 @@ function Scan({ state, setState, categories }: { state: ScanState; setState: (u:
       {state.err && <p style={{ color: '#e74c3c' }}>{state.err}</p>}
       {state.mode === 'idle' && (
         <>
-          <div className="row"><button onClick={startCamera}>📷 Сканировать чек</button></div>
+          <div id="filereader" style={{ display: 'none' }}></div>
+          <div className="scanbtns">
+            <button onClick={startCamera}>📷 Камера</button>
+            <label className="filebtn">🖼 С изображения
+              <input type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) scanImage(f); e.target.value = ''; }} />
+            </label>
+          </div>
           <p className="muted">или вставь строку из QR вручную:</p>
           <textarea
             value={state.manual}
@@ -585,11 +604,19 @@ function Scan({ state, setState, categories }: { state: ScanState; setState: (u:
               <input placeholder="ФН — номер фискального накопителя" value={mfn} onChange={(e) => setMfn(e.target.value)} inputMode="numeric" />
               <input placeholder="ФД — номер фискального документа" value={mfd} onChange={(e) => setMfd(e.target.value)} inputMode="numeric" />
               <input placeholder="ФПД (ФП) — фискальный признак" value={mfp} onChange={(e) => setMfp(e.target.value)} inputMode="numeric" />
-              <label className="fl">Дата и время чека (необязательно)
+              <label className="fl">Дата и время чека
                 <input type="datetime-local" value={mdt} onChange={(e) => setMdt(e.target.value)} />
               </label>
-              <input placeholder="Сумма чека, ₽ (необязательно)" value={ms} onChange={(e) => setMs(e.target.value)} inputMode="decimal" />
-              <button onClick={recognizeManual} disabled={!mfn || !mfd || !mfp}>Распознать по реквизитам</button>
+              <input placeholder="Сумма чека, ₽ (например 419.54)" value={ms} onChange={(e) => setMs(e.target.value)} inputMode="decimal" />
+              <label className="fl">Вид операции
+                <select value={mn} onChange={(e) => setMn(e.target.value)}>
+                  <option value="1">Приход</option>
+                  <option value="2">Возврат прихода</option>
+                  <option value="3">Расход</option>
+                  <option value="4">Возврат расхода</option>
+                </select>
+              </label>
+              <button onClick={recognizeManual} disabled={!mfn || !mfd || !mfp || !mdt || !ms}>Распознать по реквизитам</button>
             </div>
           )}
         </>

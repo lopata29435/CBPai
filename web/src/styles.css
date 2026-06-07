@@ -139,8 +139,12 @@ h3 { font-size: 14px; margin: 14px 0 6px; }
 .manualbox { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-top: 8px; }
 .manualbox input { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 11px; font-size: 15px; }
 .manualbox .fl { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.manualbox select { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 11px; font-size: 15px; }
 .manualbox button { background: var(--accent); color: #fff; border: 0; border-radius: 12px; padding: 13px; font-size: 15px; font-weight: 600; margin-top: 2px; }
 .manualbox button:disabled { opacity: 0.5; }
+.scanbtns { display: flex; gap: 10px; margin: 10px 0; }
+.scanbtns button, .filebtn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; background: var(--accent); color: #fff; border: 0; border-radius: 12px; padding: 14px; font-size: 15px; font-weight: 600; cursor: pointer; }
+.filebtn { background: var(--surface-2); border: 1px solid var(--line); color: var(--text); }
 
 /* modal / overlay */
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); overflow: auto; padding: 16px; z-index: 30; }
