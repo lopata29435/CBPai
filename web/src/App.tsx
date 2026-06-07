@@ -498,6 +498,12 @@ function Scan({ state, setState, categories }: { state: ScanState; setState: (u:
   const catList = categories.length ? categories : CATS;
   const scannerRef = useRef<any>(null);
   const set = (patch: Partial<ScanState>) => setState((s) => ({ ...s, ...patch }));
+  const [showManual, setShowManual] = useState(false);
+  const [mfn, setMfn] = useState('');
+  const [mfd, setMfd] = useState('');
+  const [mfp, setMfp] = useState('');
+  const [mdt, setMdt] = useState('');
+  const [ms, setMs] = useState('');
 
   // при уходе с вкладки — гасим камеру (превью/состояние остаются в App)
   useEffect(() => {
@@ -523,11 +529,16 @@ function Scan({ state, setState, categories }: { state: ScanState; setState: (u:
     try { await scannerRef.current?.stop(); } catch {}
     scannerRef.current = null;
   }
-  async function handleQr(qrraw: string) {
+  async function recognize(body: any) {
     set({ mode: 'loading', err: '', receipt: null, items: [] });
-    const d = await postJSON('/api/receipt/scan', { qrraw });
+    const d = await postJSON('/api/receipt/scan', body);
     if (!d.ok) { set({ err: 'Не удалось распознать чек: ' + (d.error || ''), mode: 'idle' }); return; }
     set({ receipt: d.receipt, items: (d.items || []).map((x: any) => ({ ...x, include: true })), mode: 'preview' });
+  }
+  function handleQr(qrraw: string) { recognize({ qrraw }); }
+  function recognizeManual() {
+    const t = mdt.replace(/[-:]/g, '').slice(0, 13); // 2026-06-01T18:37 -> 20260601T1837
+    recognize({ fn: mfn.trim(), fd: mfd.trim(), fp: mfp.trim(), t, s: ms.trim(), n: '1' });
   }
   function upd(i: number, k: string, v: any) {
     setState((s) => ({ ...s, items: s.items.map((x, idx) => (idx === i ? { ...x, [k]: v } : x)) }));
@@ -563,6 +574,24 @@ function Scan({ state, setState, categories }: { state: ScanState; setState: (u:
             style={{ width: '100%', height: 60, background: '#1c1c1e', color: '#eee', border: '1px solid #333', borderRadius: 8, padding: 8 }}
           />
           <div className="row"><button onClick={() => handleQr(state.manual.trim())} disabled={!state.manual.trim()}>Распознать</button></div>
+
+          <p style={{ marginTop: 18 }}>
+            <span className="link" onClick={() => setShowManual((s) => !s)}>
+              {showManual ? '▲ скрыть ручной ввод' : '▼ ввести реквизиты вручную (чек из интернета)'}
+            </span>
+          </p>
+          {showManual && (
+            <div className="manualbox">
+              <input placeholder="ФН — номер фискального накопителя" value={mfn} onChange={(e) => setMfn(e.target.value)} inputMode="numeric" />
+              <input placeholder="ФД — номер фискального документа" value={mfd} onChange={(e) => setMfd(e.target.value)} inputMode="numeric" />
+              <input placeholder="ФПД — фискальный признак" value={mfp} onChange={(e) => setMfp(e.target.value)} inputMode="numeric" />
+              <label className="fl">Дата и время чека
+                <input type="datetime-local" value={mdt} onChange={(e) => setMdt(e.target.value)} />
+              </label>
+              <input placeholder="Сумма чека, ₽ (например 419.54)" value={ms} onChange={(e) => setMs(e.target.value)} inputMode="decimal" />
+              <button onClick={recognizeManual} disabled={!mfn || !mfd || !mfp || !mdt || !ms}>Распознать по реквизитам</button>
+            </div>
+          )}
         </>
       )}
       {state.mode === 'scanning' && (

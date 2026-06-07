@@ -803,17 +803,49 @@ async fn inventory_add(State(st): State<AppState>, Json(b): Json<InvAddBody>) ->
 
 #[derive(Deserialize)]
 struct ScanBody {
-    qrraw: String,
+    qrraw: Option<String>,
+    #[serde(rename = "fn")]
+    fn_: Option<String>,
+    fd: Option<String>,
+    fp: Option<String>,
+    t: Option<String>,
+    n: Option<String>,
+    s: Option<String>,
 }
 
 async fn receipt_scan(State(st): State<AppState>, Json(b): Json<ScanBody>) -> ApiResult {
     if st.proverka_token.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "PROVERKACHEKA_TOKEN не задан".into()));
     }
+    let has_qr = b.qrraw.as_ref().map(|q| !q.trim().is_empty()).unwrap_or(false);
+    let mut form: Vec<(&str, String)> = vec![("token", st.proverka_token.clone())];
+    let qrraw_for_meta = if has_qr {
+        let q = b.qrraw.clone().unwrap();
+        form.push(("qrraw", q.clone()));
+        q
+    } else {
+        // ручной ввод реквизитов (формат 1)
+        let fnv = b.fn_.clone().unwrap_or_default();
+        let fdv = b.fd.clone().unwrap_or_default();
+        let fpv = b.fp.clone().unwrap_or_default();
+        let tv = b.t.clone().unwrap_or_default();
+        let sv = b.s.clone().unwrap_or_default();
+        if fnv.is_empty() || fdv.is_empty() || fpv.is_empty() || tv.is_empty() || sv.is_empty() {
+            return Err((StatusCode::BAD_REQUEST, "укажи ФН, ФД, ФПД, дату и сумму".into()));
+        }
+        form.push(("fn", fnv.clone()));
+        form.push(("fd", fdv.clone()));
+        form.push(("fp", fpv.clone()));
+        form.push(("t", tv.clone()));
+        form.push(("n", b.n.clone().unwrap_or_else(|| "1".to_string())));
+        form.push(("s", sv.clone()));
+        form.push(("qr", "0".to_string()));
+        format!("t={tv}&s={sv}&fn={fnv}&fp={fpv}&n=1")
+    };
     let resp = st
         .http
         .post("https://proverkacheka.com/api/v1/check/get")
-        .form(&[("token", st.proverka_token.as_str()), ("qrraw", b.qrraw.as_str())])
+        .form(&form)
         .send()
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("proverkacheka: {e}")))?;
@@ -927,7 +959,7 @@ async fn receipt_scan(State(st): State<AppState>, Json(b): Json<ScanBody>) -> Ap
         "fn": j["fiscalDriveNumber"], "fd": j["fiscalDocumentNumber"], "fp": j["fiscalSign"],
         "t": v["request"]["manual"]["check_time"].as_str().or_else(|| j["dateTime"].as_str()),
         "retailer": j["user"], "retailer_inn": j["userInn"], "total_sum_kop": j["totalSum"],
-        "raw_qr": b.qrraw, "raw_json": v.clone()
+        "raw_qr": qrraw_for_meta, "raw_json": v.clone()
     });
     Ok(Json(json!({"ok": true, "receipt": receipt_meta, "items": out})))
 }
