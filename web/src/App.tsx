@@ -542,7 +542,6 @@ function Scan({ state, setState, categories }: { state: ScanState; setState: (u:
     recognize({ fn: mfn.trim(), fd: mfd.trim(), fp: mfp.trim(), t, s: ms.trim(), n: mn });
   }
   async function scanImage(file: File) {
-    set({ mode: 'loading', err: '' });
     try {
       const { Html5Qrcode } = await import('html5-qrcode');
       const q = new (Html5Qrcode as any)('filereader');
@@ -575,10 +574,10 @@ function Scan({ state, setState, categories }: { state: ScanState; setState: (u:
 
   return (
     <div>
+      <div id="filereader" style={{ width: 1, height: 1, overflow: 'hidden', position: 'absolute', left: -9999 }}></div>
       {state.err && <p style={{ color: '#e74c3c' }}>{state.err}</p>}
       {state.mode === 'idle' && (
         <>
-          <div id="filereader" style={{ display: 'none' }}></div>
           <div className="scanbtns">
             <button onClick={startCamera}>📷 Камера</button>
             <label className="filebtn">🖼 С изображения
