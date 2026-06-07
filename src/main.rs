@@ -828,19 +828,23 @@ async fn receipt_scan(State(st): State<AppState>, Json(b): Json<ScanBody>) -> Ap
         let fnv = b.fn_.clone().unwrap_or_default();
         let fdv = b.fd.clone().unwrap_or_default();
         let fpv = b.fp.clone().unwrap_or_default();
+        if fnv.is_empty() || fdv.is_empty() || fpv.is_empty() {
+            return Err((StatusCode::BAD_REQUEST, "нужны ФН, ФД и ФПД".into()));
+        }
         let tv = b.t.clone().unwrap_or_default();
         let sv = b.s.clone().unwrap_or_default();
-        if fnv.is_empty() || fdv.is_empty() || fpv.is_empty() || tv.is_empty() || sv.is_empty() {
-            return Err((StatusCode::BAD_REQUEST, "укажи ФН, ФД, ФПД, дату и сумму".into()));
-        }
         form.push(("fn", fnv.clone()));
         form.push(("fd", fdv.clone()));
         form.push(("fp", fpv.clone()));
-        form.push(("t", tv.clone()));
         form.push(("n", b.n.clone().unwrap_or_else(|| "1".to_string())));
-        form.push(("s", sv.clone()));
+        if !tv.is_empty() {
+            form.push(("t", tv.clone()));
+        }
+        if !sv.is_empty() {
+            form.push(("s", sv.clone()));
+        }
         form.push(("qr", "0".to_string()));
-        format!("t={tv}&s={sv}&fn={fnv}&fp={fpv}&n=1")
+        format!("fn={fnv}&i={fdv}&fp={fpv}&n=1")
     };
     let resp = st
         .http

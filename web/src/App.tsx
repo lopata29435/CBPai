@@ -584,12 +584,12 @@ function Scan({ state, setState, categories }: { state: ScanState; setState: (u:
             <div className="manualbox">
               <input placeholder="ФН — номер фискального накопителя" value={mfn} onChange={(e) => setMfn(e.target.value)} inputMode="numeric" />
               <input placeholder="ФД — номер фискального документа" value={mfd} onChange={(e) => setMfd(e.target.value)} inputMode="numeric" />
-              <input placeholder="ФПД — фискальный признак" value={mfp} onChange={(e) => setMfp(e.target.value)} inputMode="numeric" />
-              <label className="fl">Дата и время чека
+              <input placeholder="ФПД (ФП) — фискальный признак" value={mfp} onChange={(e) => setMfp(e.target.value)} inputMode="numeric" />
+              <label className="fl">Дата и время чека (необязательно)
                 <input type="datetime-local" value={mdt} onChange={(e) => setMdt(e.target.value)} />
               </label>
-              <input placeholder="Сумма чека, ₽ (например 419.54)" value={ms} onChange={(e) => setMs(e.target.value)} inputMode="decimal" />
-              <button onClick={recognizeManual} disabled={!mfn || !mfd || !mfp || !mdt || !ms}>Распознать по реквизитам</button>
+              <input placeholder="Сумма чека, ₽ (необязательно)" value={ms} onChange={(e) => setMs(e.target.value)} inputMode="decimal" />
+              <button onClick={recognizeManual} disabled={!mfn || !mfd || !mfp}>Распознать по реквизитам</button>
             </div>
           )}
         </>
